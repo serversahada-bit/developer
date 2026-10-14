@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Pencil, Trash2 } from "lucide-react";
-import { requireUser, storedMenuKeys } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { approvalRoute } from "@/lib/approval";
-import { db, rows } from "@/lib/db";
+import { db } from "@/lib/db";
 import { formatDate } from "@/lib/dates";
 import { karyawanInactive, loadKaryawan, type Karyawan } from "@/lib/identity";
-import { MENUS } from "@/lib/menus";
+import { NON_ADMIN_MENUS, menuByKey } from "@/lib/menus";
 import { listUsers } from "@/lib/users";
 import ActionForm, { SubmitButton } from "@/components/ActionForm";
 import { Notice } from "@/components/ui";
@@ -51,12 +51,7 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
   }
 
   const users = await listUsers();
-  const grants = await rows<{ user_id: number; menu_key: string }>(db, "SELECT user_id, menu_key FROM user_menu_access");
-  const grantedLabels = new Map<number, string[]>();
-  for (const grant of grants) {
-    const menu = MENUS.find((m) => m.key === grant.menu_key);
-    if (menu) grantedLabels.set(grant.user_id, [...(grantedLabels.get(grant.user_id) ?? []), menu.label]);
-  }
+  const nonAdminMenus = NON_ADMIN_MENUS.map(menuByKey);
 
   const editing = editId ? users.find((u) => u.id === editId) : undefined;
   const deleting = deleteId ? users.find((u) => u.id === deleteId) : undefined;
@@ -65,8 +60,8 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
   if (deleteId && !deleting) errors.push("User yang akan dihapus tidak ditemukan.");
 
   const values: UserFormValues = editing
-    ? { karyawan_id: editing.karyawan_id ? String(editing.karyawan_id) : "", full_name: editing.full_name, username: editing.username, email: editing.email ?? "", role: editing.role, division: editing.division ?? "", menus: await storedMenuKeys(editing.id) }
-    : { karyawan_id: "", full_name: "", username: "", email: "", role: "", division: "", menus: [] };
+    ? { karyawan_id: editing.karyawan_id ? String(editing.karyawan_id) : "", full_name: editing.full_name, username: editing.username, email: editing.email ?? "", role: editing.role, division: editing.division ?? "" }
+    : { karyawan_id: "", full_name: "", username: "", email: "", role: "", division: "" };
 
   // Karyawan already linked to another account, and inactive ones, are left out of the choices.
   const linked = new Set(users.filter((u) => u.karyawan_id !== null && u.id !== editing?.id).map((u) => Number(u.karyawan_id)));
@@ -83,7 +78,7 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
       <header className="border-b border-gray-200 bg-white px-6 py-5">
         <p className="mb-1 text-xs text-gray-400">IT PSLU / Pengaturan</p>
         <h1 className="text-2xl font-bold text-gray-900">Users</h1>
-        <p className="mt-1 text-sm text-gray-500">Kelola akun, email, jabatan, akses menu, dan jalur approval anggota tim.</p>
+        <p className="mt-1 text-sm text-gray-500">Kelola akun, email, jabatan, divisi, dan jalur approval anggota tim.</p>
       </header>
       <div className="space-y-6 p-4 md:p-6 lg:p-8">
         {saved && <Notice>{saved}</Notice>}
@@ -122,7 +117,7 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
           {requester > 0 && users.some((u) => u.id === requester) && <RouteEditor key={requester} requesterId={requester} initial={routeIds} accounts={accounts} />}
         </section>
 
-        <UserForm editId={editing?.id ?? 0} editingLocal={Boolean(editing && editing.karyawan_id === null)} values={values} karyawanOptions={karyawanOptions} menus={MENUS} />
+        <UserForm editId={editing?.id ?? 0} editingLocal={Boolean(editing && editing.karyawan_id === null)} values={values} karyawanOptions={karyawanOptions} menus={nonAdminMenus} />
 
         <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
           <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-5 py-4">
@@ -137,7 +132,6 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
               <tbody className="divide-y divide-gray-100">
                 {users.map((account) => {
                   const linkedKaryawan = account.karyawan_id === null ? null : karyawan?.get(Number(account.karyawan_id));
-                  const menus = grantedLabels.get(account.id) ?? [];
                   return (
                     <tr key={account.id}>
                       <td className="px-5 py-4 font-medium text-gray-900">{account.full_name}{account.id === user.id && <span className="text-xs text-gray-400"> (Anda)</span>}</td>
@@ -160,9 +154,7 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
                       <td className="px-5 py-4"><span className="inline-block rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">{account.role}</span></td>
                       <td className="px-5 py-4 text-gray-600">{account.division || "Belum diisi"}</td>
                       <td className="whitespace-nowrap px-5 py-4">
-                        {account.role === "Admin" ? <span className="text-gray-600">Semua menu</span>
-                          : menus.length === 0 ? <span className="inline-block rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">Belum diatur</span>
-                          : <span className="text-gray-600" title={menus.join(", ")}>{menus.length} dari {MENUS.length} menu</span>}
+                        <span className="text-gray-600">{account.role === "Admin" ? "Semua menu" : nonAdminMenus.map((menu) => menu.label).join(", ")}</span>
                       </td>
                       <td className="whitespace-nowrap px-5 py-4 text-gray-500">{formatDate(account.created_at, "d M Y H:i")}</td>
                       <td className="whitespace-nowrap px-5 py-4">

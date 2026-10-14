@@ -34,6 +34,12 @@ export function menuByKey(key: MenuKey): MenuDefinition {
   return MENUS.find((menu) => menu.key === key)!;
 }
 
+// Every non-Admin account gets exactly these menus, whatever user_menu_access holds: they only submit
+// service requests. Task shows how busy the developers are (read-only; "rahasia" documents stay
+// masked). Approvals stays because requesters follow, revise and test their documents there and
+// approvers decide there. The first entry is the landing page.
+export const NON_ADMIN_MENUS: MenuKey[] = ["pengajuan", "tasks", "approvals"];
+
 // Projects, Activity Log and My Tasks share the same daily log / project mutations, as process.php did.
 export const LOG_MENUS: MenuKey[] = ["projects", "activity_log", "my_tasks"];
 

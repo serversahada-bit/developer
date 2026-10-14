@@ -7,7 +7,7 @@ Port dari aplikasi PHP `developer-main` ke Next.js 16 (App Router), dengan stack
 ```powershell
 npm install
 copy .env.example .env.local   # lalu isi SESSION_SECRET dan sesuaikan DB
-npm run dev                     # http://localhost:3002
+npm run dev                     # http://localhost:3000
 npm run build; npm run start    # produksi
 ```
 
@@ -93,5 +93,5 @@ Saat ini akun tetap berada di tabel `users`, karena seluruh foreign key riwayat 
 Isi `MAIL_*` di `.env.local` dan set `MAIL_ENABLED=true`. Kirim ulang antrean secara terjadwal:
 
 ```powershell
-curl -X POST -H "Authorization: Bearer $env:CRON_SECRET" http://localhost:3002/api/cron/approval-emails
+curl -X POST -H "Authorization: Bearer $env:CRON_SECRET" http://localhost:3000/api/cron/approval-emails
 ```

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { allowedLoginDestination, userIdForKaryawan } from "@/lib/auth";
+import { allowedLoginDestination } from "@/lib/auth";
+import { ensureUserForKaryawan } from "@/lib/users";
 import { SESSION_COOKIE, sessionCookieOptions, signSession } from "@/lib/session";
 import { findKaryawanById, karyawanInactive } from "@/lib/identity";
 import { verifySsoToken } from "@/lib/sso";
@@ -32,8 +33,14 @@ export async function GET(request: NextRequest) {
     return fail("unavailable");
   }
   if (!karyawan || karyawanInactive(karyawan)) return fail("inactive");
-  const userId = await userIdForKaryawan(verified.karyawanId);
-  if (!userId) return fail("unregistered");
+  // First visit of a karyawan without an account: one is created with Buat Pengajuan only.
+  let userId;
+  try {
+    userId = await ensureUserForKaryawan(verified.karyawanId);
+  } catch (error) {
+    console.error("SSO account creation failed:", error);
+    return fail("unavailable");
+  }
 
   const next = allowedLoginDestination(request.nextUrl.searchParams.get("next"));
   const response = NextResponse.redirect(`${origin}${next}`, noStore);

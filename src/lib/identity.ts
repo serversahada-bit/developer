@@ -30,6 +30,16 @@ export async function findKaryawanById(id: number): Promise<Karyawan | null> {
   return row<Karyawan>(absenDb(), "SELECT id, nama, nama_user, email, status_karyawan FROM karyawan WHERE id = ? LIMIT 1", [id]);
 }
 
+// What an account created automatically on first sign-in is filled from.
+export interface KaryawanProfile extends Karyawan {
+  jabatan: string | null;
+  organisasi: string | null;
+}
+
+export async function findKaryawanProfile(id: number): Promise<KaryawanProfile | null> {
+  return row<KaryawanProfile>(absenDb(), "SELECT id, nama, nama_user, email, status_karyawan, jabatan, organisasi FROM karyawan WHERE id = ? LIMIT 1", [id]);
+}
+
 // Same rule as the Absensi app: an email must be Gmail, anything else is the nama_user username.
 async function findKaryawanForLogin(identifier: string): Promise<{ id: number; password: string | null; status_karyawan: string | null } | null> {
   let column: "email" | "nama_user";

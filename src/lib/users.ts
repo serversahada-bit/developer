@@ -2,9 +2,9 @@ import "server-only";
 import bcrypt from "bcryptjs";
 import type { PoolConnection } from "mysql2/promise";
 import { db, exec, isDuplicateKey, isForeignKeyBlock, row, rows, transaction } from "./db";
-import { karyawanLinkError, type Karyawan } from "./identity";
-import { USER_DIVISIONS, USER_ROLES, isMenuKey, type MenuKey } from "./menus";
-import { str, strs } from "./form";
+import { findKaryawanProfile, karyawanLinkError, type Karyawan, type KaryawanProfile } from "./identity";
+import { NON_ADMIN_MENUS, USER_DIVISIONS, USER_ROLES, type UserRole } from "./menus";
+import { str } from "./form";
 
 export interface UserValues {
   karyawan_id: number;
@@ -15,7 +15,6 @@ export interface UserValues {
   division: string;
   password: string;
   password_confirmation: string;
-  menus: MenuKey[];
 }
 
 class ManagedUserError extends Error {}
@@ -32,7 +31,6 @@ function passwordErrors(password: string, confirmation: string): string[] {
 
 export function validateUserInput(form: FormData): [UserValues, string[]] {
   const karyawanRaw = str(form, "karyawan_id").trim();
-  const menus = strs(form, "menus");
   const values: UserValues = {
     karyawan_id: /^[1-9][0-9]{0,9}$/.test(karyawanRaw) ? Number(karyawanRaw) : 0,
     full_name: str(form, "full_name").trim(),
@@ -42,7 +40,6 @@ export function validateUserInput(form: FormData): [UserValues, string[]] {
     division: str(form, "division").trim(),
     password: str(form, "password"),
     password_confirmation: str(form, "password_confirmation"),
-    menus: [...new Set(menus.filter(isMenuKey))],
   };
   const errors: string[] = [];
   if (values.full_name === "" || [...values.full_name].length > 100) errors.push("Nama lengkap wajib diisi, maksimal 100 karakter.");
@@ -50,7 +47,6 @@ export function validateUserInput(form: FormData): [UserValues, string[]] {
   if (!(USER_ROLES as readonly string[]).includes(values.role)) errors.push("Pilih jabatan yang tersedia.");
   if (!(USER_DIVISIONS as readonly string[]).includes(values.division)) errors.push("Pilih divisi yang tersedia.");
   if (values.email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email)) errors.push("Masukkan alamat email yang valid, maksimal 254 karakter.");
-  if (!menus.every(isMenuKey)) errors.push("Pilihan menu tidak valid.");
   return [values, errors];
 }
 
@@ -58,9 +54,69 @@ export function duplicateUserMessage(): string {
   return "Username, email, atau karyawan tersebut sudah digunakan oleh user lain.";
 }
 
-async function saveUserMenus(tx: PoolConnection, userId: number, keys: MenuKey[]): Promise<void> {
+// Menus are fixed by role (see NON_ADMIN_MENUS); the rows are still written so the PHP app, which
+// reads user_menu_access, shows the same menus.
+async function saveUserMenus(tx: PoolConnection, userId: number, role: string): Promise<void> {
   await exec(tx, "DELETE FROM user_menu_access WHERE user_id = ?", [userId]);
-  for (const key of keys) await exec(tx, "INSERT INTO user_menu_access (user_id, menu_key) VALUES (?, ?)", [userId, key]);
+  if (role === "Admin") return;
+  for (const key of NON_ADMIN_MENUS) await exec(tx, "INSERT INTO user_menu_access (user_id, menu_key) VALUES (?, ?)", [userId, key]);
+}
+
+// users.role only has Manager / SPV / Koordinator / Admin (shared with the PHP app), so staff
+// without one of those titles are stored as Koordinator; for non-Admins it is only a label.
+function roleFromJabatan(jabatan: string | null): UserRole {
+  const title = jabatan ?? "";
+  if (/manager/i.test(title)) return "Manager";
+  if (/\bspv\b|supervisor/i.test(title)) return "SPV";
+  return "Koordinator";
+}
+
+function divisionFromOrganisasi(organisasi: string | null): string | null {
+  const name = (organisasi ?? "").trim().toLowerCase();
+  return USER_DIVISIONS.find((division) => division.toLowerCase() === name) ?? null;
+}
+
+function usernameCandidates(karyawan: KaryawanProfile): string[] {
+  const clean = (value: string | null) => (value ?? "").trim().replace(/\s+/g, ".").replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 50);
+  const base = clean(karyawan.nama_user) || clean((karyawan.email ?? "").split("@")[0]);
+  const fallback = `karyawan${karyawan.id}`;
+  return base.length >= 3 ? [base, `${base.slice(0, 50 - String(karyawan.id).length - 1)}.${karyawan.id}`, fallback] : [fallback];
+}
+
+// The account linked to this karyawan, created on first sign-in (from Great SSO or the login form)
+// when an Admin has not registered one: Buat Pengajuan only, filled from the Absensi data. The
+// division is left empty when the karyawan's organisasi is not one of USER_DIVISIONS; FPA / FPA-A
+// then ask the requester to have an Admin set it.
+export async function ensureUserForKaryawan(karyawanId: number): Promise<number> {
+  const existing = await row<{ id: number }>(db, "SELECT id FROM users WHERE karyawan_id = ?", [karyawanId]);
+  if (existing) return existing.id;
+  const karyawan = await findKaryawanProfile(karyawanId);
+  if (!karyawan) throw new Error(`Karyawan ${karyawanId} tidak ditemukan.`);
+
+  const fullName = [...(karyawan.nama?.trim() || `Karyawan ${karyawanId}`)].slice(0, 100).join("");
+  const email = karyawan.email?.trim() ?? "";
+  const role = roleFromJabatan(karyawan.jabatan);
+  const division = divisionFromOrganisasi(karyawan.organisasi);
+  const emailFree = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= 254
+    && !(await row(db, "SELECT id FROM users WHERE email = ?", [email]));
+
+  for (const username of usernameCandidates(karyawan)) {
+    try {
+      return await transaction(async (tx) => {
+        const result = await exec(tx, "INSERT INTO users (karyawan_id, full_name, username, email, role, division) VALUES (?, ?, ?, ?, ?, ?)", [
+          karyawanId, fullName, username, emailFree ? email : null, role, division,
+        ]);
+        await saveUserMenus(tx, result.insertId, role);
+        return result.insertId;
+      });
+    } catch (error) {
+      if (!isDuplicateKey(error)) throw error;
+      // A parallel sign-in of the same karyawan may have created it; otherwise the username is taken.
+      const created = await row<{ id: number }>(db, "SELECT id FROM users WHERE karyawan_id = ?", [karyawanId]);
+      if (created) return created.id;
+    }
+  }
+  throw new Error(`Username untuk karyawan ${karyawanId} sudah dipakai semua.`);
 }
 
 // New accounts are always linked to a karyawan and sign in with their Absensi password.
@@ -75,7 +131,7 @@ export async function createUser(form: FormData, karyawanList: Map<number, Karya
       const result = await exec(tx, "INSERT INTO users (karyawan_id, full_name, username, email, role, division) VALUES (?, ?, ?, ?, ?, ?)", [
         values.karyawan_id, values.full_name, values.username, values.email, values.role, values.division,
       ]);
-      await saveUserMenus(tx, result.insertId, values.menus);
+      await saveUserMenus(tx, result.insertId, values.role);
     });
   } catch (error) {
     if (isDuplicateKey(error)) return [duplicateUserMessage()];
@@ -123,7 +179,7 @@ export async function updateUser(id: number, form: FormData, actorId: number, ka
       }
       params.push(id);
       await exec(tx, `${sql} WHERE id = ?`, params);
-      await saveUserMenus(tx, id, values.menus);
+      await saveUserMenus(tx, id, values.role);
     });
   } catch (error) {
     if (error instanceof ManagedUserError) return [error.message];

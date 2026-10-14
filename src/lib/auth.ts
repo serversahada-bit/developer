@@ -3,9 +3,10 @@ import { cache } from "react";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import bcrypt from "bcryptjs";
-import { db, row, rows } from "./db";
+import { db, row } from "./db";
 import { verifyKaryawanLogin } from "./identity";
-import { MENUS, isMenuKey, type MenuDefinition, type MenuKey, type UserRole } from "./menus";
+import { MENUS, NON_ADMIN_MENUS, isMenuKey, menuByKey, type MenuDefinition, type MenuKey, type UserRole } from "./menus";
+import { ensureUserForKaryawan } from "./users";
 import { SESSION_COOKIE, sessionCookieOptions, signSession, verifySession } from "./session";
 
 export interface CurrentUser {
@@ -21,15 +22,6 @@ export interface CurrentUser {
 // Thrown by server actions for input or permission problems; the message is shown to the user.
 export class UserError extends Error {}
 
-async function storedMenuKeys(userId: number): Promise<MenuKey[]> {
-  const granted = await rows<{ menu_key: string }>(db, "SELECT menu_key FROM user_menu_access WHERE user_id = ?", [userId]);
-  const keys = new Set(granted.map((g) => g.menu_key));
-  // Definition order, ignoring rows for menus that no longer exist.
-  return MENUS.filter((menu) => keys.has(menu.key)).map((menu) => menu.key);
-}
-
-export { storedMenuKeys };
-
 // The signed-in account, read fresh from the database once per request.
 export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   const store = await cookies();
@@ -37,7 +29,7 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   if (!userId) return null;
   const user = await row<Omit<CurrentUser, "menus">>(db, "SELECT id, karyawan_id, full_name, username, role, division FROM users WHERE id = ?", [userId]);
   if (!user) return null;
-  const menus = user.role === "Admin" ? MENUS.map((m) => m.key) : await storedMenuKeys(user.id);
+  const menus = user.role === "Admin" ? MENUS.map((m) => m.key) : [...NON_ADMIN_MENUS];
   return { ...user, menus };
 });
 
@@ -53,9 +45,10 @@ export function canUseMenu(user: CurrentUser, key: MenuKey | MenuKey[]): boolean
   return (Array.isArray(key) ? key : [key]).some((k) => user.menus.includes(k));
 }
 
-// First menu the account may open, used as its landing page; null when none is granted.
+// Landing page: the first menu in the account's own order (Projects for Admin, Buat Pengajuan for
+// everyone else); null when none is granted.
 export function userHomeMenu(user: CurrentUser): MenuDefinition | null {
-  return MENUS.find((menu) => user.menus.includes(menu.key)) ?? null;
+  return user.menus.length ? menuByKey(user.menus[0]) : null;
 }
 
 // For server actions: the signed-in account with one of the menus, otherwise a UserError.
@@ -89,9 +82,13 @@ export async function authenticateLogin(identifier: string, password: string): P
     if (check.reason === "inactive") return [null, "Akun Anda telah dinonaktifkan. Silakan hubungi HRD."];
     return invalid;
   }
-  const userId = await userIdForKaryawan(check.karyawanId);
-  if (!userId) return [null, "Akun Anda belum didaftarkan di aplikasi Developer. Hubungi Admin."];
-  return [userId, null];
+  // A karyawan without an account yet gets one (Buat Pengajuan only), as with SSO from Great.
+  try {
+    return [await ensureUserForKaryawan(check.karyawanId), null];
+  } catch (error) {
+    console.error("Create account for karyawan failed:", error);
+    return [null, "Akun Anda belum berhasil disiapkan. Silakan coba beberapa saat lagi."];
+  }
 }
 
 export async function userIdForKaryawan(karyawanId: number): Promise<number | null> {

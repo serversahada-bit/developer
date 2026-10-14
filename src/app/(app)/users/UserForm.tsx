@@ -22,7 +22,6 @@ export interface UserFormValues {
   email: string;
   role: string;
   division: string;
-  menus: string[];
 }
 
 const inputClass = "w-full rounded-lg border border-gray-300 px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500";
@@ -113,17 +112,10 @@ export default function UserForm({ editId, editingLocal, values, karyawanOptions
                 </div>
               </>
             )}
-            <fieldset className="rounded-lg border border-gray-200 p-4 md:col-span-2">
-              <legend className="px-1 text-sm font-medium text-gray-700">Akses menu</legend>
-              <p className="mb-3 text-xs text-gray-500">Hanya menu yang dicentang yang muncul di sidebar dan dapat dibuka. Admin selalu dapat membuka semua menu. Detail pengajuan dari link email tetap dapat dibuka oleh pemohon dan approver-nya.</p>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                {menus.map((menu) => (
-                  <label key={menu.key} className="flex cursor-pointer items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50">
-                    <input type="checkbox" name="menus" value={menu.key} defaultChecked={values.menus.includes(menu.key)} className="rounded border-gray-300 text-indigo-600" /> {menu.label}
-                  </label>
-                ))}
-              </div>
-            </fieldset>
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600 md:col-span-2">
+              <p className="font-medium text-gray-700">Akses menu mengikuti jabatan</p>
+              <p className="mt-1 text-xs text-gray-500">Admin dapat membuka semua menu. Jabatan lain hanya dapat membuka {menus.map((menu) => menu.label).join(" dan ")}. Detail pengajuan dari link email tetap dapat dibuka oleh pemohon dan approver-nya.</p>
+            </div>
             <div className="flex flex-wrap justify-end gap-3 md:col-span-2">
               {editId > 0 && <Link href="/users" className="rounded-lg border border-gray-300 px-5 py-2.5 text-sm">Batal Edit</Link>}
               <button type="submit" disabled={pending} className="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60 sm:w-auto">
