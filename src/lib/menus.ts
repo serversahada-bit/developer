@@ -34,10 +34,32 @@ export function menuByKey(key: MenuKey): MenuDefinition {
   return MENUS.find((menu) => menu.key === key)!;
 }
 
+// Every non-Admin account gets exactly these menus, whatever user_menu_access holds: they only submit
+// service requests. Task shows how busy the developers are (read-only; "rahasia" documents stay
+// masked). Approvals stays because requesters follow, revise and test their documents there and
+// approvers decide there. The first entry is the landing page.
+export const NON_ADMIN_MENUS: MenuKey[] = ["pengajuan", "tasks", "approvals"];
+
 // Projects, Activity Log and My Tasks share the same daily log / project mutations, as process.php did.
 export const LOG_MENUS: MenuKey[] = ["projects", "activity_log", "my_tasks"];
 
 export const USER_ROLES = ["Manager", "SPV", "Koordinator", "Admin"] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
-export const USER_DIVISIONS = ["HC", "Markom", "ADV", "FAT", "MP", "FF", "IT", "Meta", "CRM", "CSO", "Tiktok", "Marketing Branding"] as const;
+// FPA / FPA-A approvers chosen by an Admin (table approval_roles), one account each. They only
+// approve, so they never get Buat Pengajuan.
+export const MANAGER_ROLES = ["manager_it", "manager_fat"] as const;
+export type ManagerRole = (typeof MANAGER_ROLES)[number];
+export const MANAGER_ROLE_LABEL: Record<ManagerRole, string> = { manager_it: "Manager IT", manager_fat: "Manager FAT" };
+export const MANAGER_MENUS: MenuKey[] = ["approvals", "tasks"];
+
+// Tim IT decides the second FPA / FPA-A stage: every Admin account of the IT division.
+export function isTimIt(user: { role: string; division: string | null }): boolean {
+  return user.role === "Admin" && user.division === "IT";
+}
+
+export function timItWhere(alias: string): string {
+  return `${alias}.role = 'Admin' AND ${alias}.division = 'IT'`;
+}
+
+export const USER_DIVISIONS =["HC", "Markom", "ADV", "FAT", "MP", "FF", "IT", "Meta", "CRM", "CSO", "Tiktok", "Marketing Branding"] as const;

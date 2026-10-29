@@ -1,11 +1,10 @@
 import "server-only";
 import { db, exec, row, rows, transaction, type Row } from "./db";
 import { UserError, type CurrentUser } from "./auth";
-import { approvalTable, type DocType } from "./documents";
-import { approvalRun, approvalSteps, startApproval, type ApprovalRun } from "./approval";
-import { queueApprovalEmail } from "./email";
+import { approvalTable, costColumns, effectiveCost, type DocType } from "./documents";
+import { approvalRun, approvalSteps, resolveAtasan, restartApproval, startApproval, type ApprovalRun } from "./approval";
 import { ScopeError, decodeScopeItems, encodeScopeItems, parseScopeItems, scopeItemsForRevision, type ScopeItem } from "./scope";
-import { indexedRows, str, strs } from "./form";
+import { indexedRows, parseRupiah, str, strs } from "./form";
 import { isDateString, wibDateTime } from "./dates";
 
 function text(form: FormData, key: string, max = 10000, required = false): string {
@@ -22,12 +21,12 @@ function choices(form: FormData, key: string, allowed: string[], required = fals
 }
 
 function number(form: FormData, key: string, money = false): string | null {
-  let value = text(form, key, 40);
+  const value = text(form, key, 40);
   if (value === "") return null;
   if (money) {
-    value = value.replace(/Rp|\.| /g, "").replace(",", ".");
-    if (!/^\d{1,13}(?:\.\d{1,2})?$/.test(value)) throw new UserError("Biaya tidak valid. Gunakan titik untuk ribuan dan koma untuk desimal.");
-    return value;
+    const amount = parseRupiah(value);
+    if (amount === undefined) throw new UserError("Biaya tidak valid. Gunakan titik untuk ribuan dan koma untuk desimal.");
+    return amount;
   }
   if (!/^\d{1,8}$/.test(value)) throw new UserError(`Isian ${key} harus berupa angka positif atau nol.`);
   return value;
@@ -86,6 +85,8 @@ function submissionValues(type: DocType, form: FormData, user: CurrentUser): Rec
 export async function saveApprovalSubmission(type: DocType, form: FormData, user: CurrentUser, revisionId = 0, expectedCycle = 0): Promise<number> {
   const table = approvalTable(type);
   const data = submissionValues(type, form, user);
+  // Read from Absensi outside the transaction; a revision re-reads it, as the supervisor may have changed.
+  const atasan = await resolveAtasan(user.id);
   return transaction(async (tx) => {
     if (revisionId) {
       const document = await row(tx, `SELECT * FROM ${table} WHERE id = ? FOR UPDATE`, [revisionId]);
@@ -94,16 +95,10 @@ export async function saveApprovalSubmission(type: DocType, form: FormData, user
         throw new UserError("Dokumen ini tidak dapat Anda revisi.");
       }
       if (expectedCycle !== run.cycle) throw new UserError("Versi revisi sudah berubah. Muat ulang halaman.");
+      // The form was prefilled with the last budget correction, so what the requester sends now replaces it.
       const assignments = Object.keys(data).map((key) => `${key} = ?`).join(", ");
-      await exec(tx, `UPDATE ${table} SET ${assignments}, status_dokumen = 'Diajukan' WHERE id = ?`, [...Object.values(data), revisionId]);
-      await exec(tx, `INSERT INTO approval_steps (run_id, cycle, position, approver_id, approver_name)
-        SELECT run_id, cycle + 1, position, approver_id, approver_name FROM approval_steps WHERE run_id = ? AND cycle = ?`, [run.id, run.cycle]);
-      await exec(tx, "UPDATE approval_runs SET cycle = cycle + 1, current_position = 1, state = 'pending' WHERE id = ?", [run.id]);
-      const nextRun = { ...run, cycle: run.cycle + 1 };
-      await exec(tx, "INSERT INTO approval_events (run_id, cycle, actor_id, actor_name, action, note, document_snapshot) VALUES (?, ?, ?, ?, 'resubmit', '', ?)", [
-        nextRun.id, nextRun.cycle, user.id, user.full_name, JSON.stringify(await row(tx, `SELECT * FROM ${table} WHERE id = ?`, [revisionId])),
-      ]);
-      await queueApprovalEmail(tx, type, revisionId);
+      await exec(tx, `UPDATE ${table} SET ${assignments}, ${costColumns(type).corrected} = NULL, status_dokumen = 'Diajukan' WHERE id = ?`, [...Object.values(data), revisionId]);
+      await restartApproval(tx, type, revisionId, run, user, atasan);
       return revisionId;
     }
     // Serialize monthly numbering across both forms without changing existing numbers.
@@ -124,7 +119,7 @@ export async function saveApprovalSubmission(type: DocType, form: FormData, user
     data.status_dokumen = "Diajukan";
     const columns = Object.keys(data);
     const result = await exec(tx, `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`, Object.values(data));
-    await startApproval(tx, type, result.insertId, user.id, user);
+    await startApproval(tx, type, result.insertId, user.id, user, atasan);
     return result.insertId;
   });
 }
@@ -142,6 +137,12 @@ export async function revisionFormData(type: DocType, id: number, user: CurrentU
   if (!document || !run || run.state !== "revision" || run.requester_id !== user.id) throw new UserError("Dokumen ini tidak dapat Anda revisi.");
   const field = type === "fpa" ? "solusi" : "deskripsi_perubahan";
   const scope = scopeItemsForRevision(decodeScopeItems(document[field], type === "fpa" ? "fpa_solusi_list" : "fpaa_scope_list"), document[field]);
+  // The form starts from the budget as last corrected by Tim IT / Manager IT.
+  const { original, corrected } = costColumns(type);
+  if (document[corrected] !== null && document[corrected] !== undefined) {
+    document[original] = effectiveCost(type, document);
+    if (type === "fpa") document.status_biaya = Number(document[original]) > 0 ? "Berbayar" : "Tanpa Biaya";
+  }
   for (const key of ["estimasi_biaya", "tambahan_biaya"]) {
     if (document[key] !== null && document[key] !== undefined) {
       document[key] = Number(document[key]).toLocaleString("id-ID", { minimumFractionDigits: 2, maximumFractionDigits: 2 });

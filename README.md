@@ -1,6 +1,6 @@
 # IT PSLU Developer (Next.js)
 
-Port dari aplikasi PHP `developer-main` ke Next.js 16 (App Router), dengan stack yang sama seperti absen-main dan ERPshd-main: Next.js 16, React 19, Tailwind 4, mysql2, dan jose. Database dan skemanya **tidak berubah**, sehingga versi PHP dan versi ini bisa berjalan berdampingan pada data yang sama selama masa transisi.
+Port dari aplikasi PHP `developer-main` ke Next.js 16 (App Router), dengan stack yang sama seperti absen-main dan ERPshd-main: Next.js 16, React 19, Tailwind 4, mysql2, dan jose. Database yang dipakai sama dengan versi PHP. Sejak alur approval bertahap (Atasan → Tim IT → Manager IT → Manager FAT), FPA / FPA-A hanya diajukan dan disetujui lewat aplikasi ini; versi PHP tidak dipakai lagi untuk FPA / FPA-A.
 
 ## Menjalankan
 
@@ -11,7 +11,17 @@ npm run dev                     # http://localhost:3002
 npm run build; npm run start    # produksi
 ```
 
-`.env.local` lokal sudah diarahkan ke `u313218767_dev` (aplikasi) dan `absensi` (tabel `karyawan`) di XAMPP.
+`.env.local` lokal sudah diarahkan ke `u313218767_dev` (aplikasi) dan `absensi` (tabel `karyawan` dan `tim_saya`) di XAMPP.
+
+## Migrasi database
+
+Perubahan skema ada di `migrations/`, satu file SQL per perubahan, diurutkan menurut nama. Jalankan sekali di database aplikasi (`DB_NAME`) **sebelum** deploy versi yang memakainya, misalnya lewat phpMyAdmin atau:
+
+```powershell
+mysql -u <user> -p u313218767_dev < migrations/2026-10-26_approval_tahap.sql
+```
+
+User `ABSEN_DB_USER` cukup diberi `SELECT` pada tabel `karyawan` dan `tim_saya`.
 
 ## Struktur
 

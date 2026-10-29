@@ -21,6 +21,9 @@ function createPool(prefix: "DB" | "ABSEN_DB", fallbackName: string): Pool {
     connectionLimit: 10,
     connectTimeout: 5000,
     enableKeepAlive: true,
+    // The remote MySQL (or the network in between) drops idle sockets; close them before it does.
+    maxIdle: 2,
+    idleTimeout: 30000,
   });
   // NOW()/CURDATE() and TIMESTAMP columns follow WIB, independent of the MySQL server zone.
   // Indonesia has no daylight saving, so the fixed offset is always right.
@@ -41,9 +44,21 @@ export function absenDb(): Pool {
   return globalForDb.absenPool ?? (globalForDb.absenPool = createPool("ABSEN_DB", "absensi"));
 }
 
+// Errors from a pooled socket the server already closed; the pool drops that socket, so a retry
+// gets a fresh one.
+const STALE_CONNECTION = new Set(["ECONNRESET", "EPIPE", "PROTOCOL_CONNECTION_LOST"]);
+
 export async function rows<T extends Row = Row>(conn: Db, sql: string, params: Param[] = []): Promise<T[]> {
-  const [result] = await conn.query(sql, params);
-  return result as T[];
+  try {
+    const [result] = await conn.query(sql, params);
+    return result as T[];
+  } catch (error) {
+    // Reads only, and only on the pool: a transaction connection cannot be swapped mid-transaction,
+    // and a write may already have been applied before the reset.
+    if (!("getConnection" in conn) || !STALE_CONNECTION.has((error as { code?: string })?.code ?? "")) throw error;
+    const [result] = await conn.query(sql, params);
+    return result as T[];
+  }
 }
 
 export async function row<T extends Row = Row>(conn: Db, sql: string, params: Param[] = []): Promise<T | null> {

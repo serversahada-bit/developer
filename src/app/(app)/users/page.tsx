@@ -1,17 +1,16 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Pencil, Trash2 } from "lucide-react";
-import { requireUser, storedMenuKeys } from "@/lib/auth";
-import { approvalRoute } from "@/lib/approval";
-import { db, rows } from "@/lib/db";
+import { requireUser } from "@/lib/auth";
+import { managerHolders, timItMembers } from "@/lib/approval";
+import { db } from "@/lib/db";
 import { formatDate } from "@/lib/dates";
 import { karyawanInactive, loadKaryawan, type Karyawan } from "@/lib/identity";
-import { MENUS } from "@/lib/menus";
+import { MANAGER_MENUS, MANAGER_ROLE_LABEL, MANAGER_ROLES, NON_ADMIN_MENUS, menuByKey } from "@/lib/menus";
 import { listUsers } from "@/lib/users";
 import ActionForm, { SubmitButton } from "@/components/ActionForm";
 import { Notice } from "@/components/ui";
-import { deleteUserAction } from "./actions";
-import RouteEditor from "./RouteEditor";
+import { deleteUserAction, saveManagerRolesAction } from "./actions";
 import UserForm, { type KaryawanOption, type UserFormValues } from "./UserForm";
 
 export const metadata: Metadata = { title: "Users" };
@@ -20,7 +19,7 @@ const SAVED: Record<string, string> = {
   created: "User berhasil dibuat.",
   updated: "Perubahan user berhasil disimpan.",
   deleted: "User berhasil dihapus.",
-  route: "Jalur approval FPA dan FPA-A disimpan. Berlaku untuk pengajuan baru.",
+  roles: "Manager IT dan Manager FAT disimpan. Dokumen yang sedang menunggu peran tersebut dialihkan ke akun baru.",
 };
 
 const idParam = (value: unknown) => (typeof value === "string" && /^[1-9][0-9]{0,9}$/.test(value) ? Number(value) : 0);
@@ -40,7 +39,6 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
   const params = await searchParams;
   const editId = idParam(params.edit);
   const deleteId = idParam(params.delete);
-  const requester = idParam(params.requester);
 
   // Accounts sign in with the Absensi app's karyawan credentials, so the employee list comes from there.
   let karyawan: Map<number, Karyawan> | null = null;
@@ -51,12 +49,10 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
   }
 
   const users = await listUsers();
-  const grants = await rows<{ user_id: number; menu_key: string }>(db, "SELECT user_id, menu_key FROM user_menu_access");
-  const grantedLabels = new Map<number, string[]>();
-  for (const grant of grants) {
-    const menu = MENUS.find((m) => m.key === grant.menu_key);
-    if (menu) grantedLabels.set(grant.user_id, [...(grantedLabels.get(grant.user_id) ?? []), menu.label]);
-  }
+  const nonAdminMenus = NON_ADMIN_MENUS.map(menuByKey);
+  const holders = await managerHolders(db);
+  const timIt = await timItMembers(db);
+  const managerIds = new Set(Object.values(holders).map((holder) => holder.id));
 
   const editing = editId ? users.find((u) => u.id === editId) : undefined;
   const deleting = deleteId ? users.find((u) => u.id === deleteId) : undefined;
@@ -65,8 +61,8 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
   if (deleteId && !deleting) errors.push("User yang akan dihapus tidak ditemukan.");
 
   const values: UserFormValues = editing
-    ? { karyawan_id: editing.karyawan_id ? String(editing.karyawan_id) : "", full_name: editing.full_name, username: editing.username, email: editing.email ?? "", role: editing.role, division: editing.division ?? "", menus: await storedMenuKeys(editing.id) }
-    : { karyawan_id: "", full_name: "", username: "", email: "", role: "", division: "", menus: [] };
+    ? { karyawan_id: editing.karyawan_id ? String(editing.karyawan_id) : "", full_name: editing.full_name, username: editing.username, email: editing.email ?? "", role: editing.role, division: editing.division ?? "" }
+    : { karyawan_id: "", full_name: "", username: "", email: "", role: "", division: "" };
 
   // Karyawan already linked to another account, and inactive ones, are left out of the choices.
   const linked = new Set(users.filter((u) => u.karyawan_id !== null && u.id !== editing?.id).map((u) => Number(u.karyawan_id)));
@@ -74,8 +70,7 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
     .filter((k) => String(k.id) === values.karyawan_id || (!linked.has(k.id) && !karyawanInactive(k)))
     .map((k) => ({ id: k.id, label: `${k.nama} (${k.nama_user})${karyawanInactive(k) ? " - Non-Aktif" : ""}`, nama: k.nama ?? "", nama_user: k.nama_user ?? "", email: k.email ?? "" }));
 
-  const accounts = users.map((u) => ({ id: u.id, label: `${u.full_name} (@${u.username})` }));
-  const routeIds = requester && users.some((u) => u.id === requester) ? (await approvalRoute(db, requester)).map((step) => step.approver_id) : [];
+  const accounts = users.map((u) => ({ id: u.id, label: `${u.full_name} (@${u.username}) · ${u.role}${u.division ? ` ${u.division}` : ""}` }));
   const saved = typeof params.saved === "string" ? SAVED[params.saved] : undefined;
 
   return (
@@ -83,7 +78,7 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
       <header className="border-b border-gray-200 bg-white px-6 py-5">
         <p className="mb-1 text-xs text-gray-400">IT PSLU / Pengaturan</p>
         <h1 className="text-2xl font-bold text-gray-900">Users</h1>
-        <p className="mt-1 text-sm text-gray-500">Kelola akun, email, jabatan, akses menu, dan jalur approval anggota tim.</p>
+        <p className="mt-1 text-sm text-gray-500">Kelola akun, email, jabatan, divisi, dan peran approval FPA / FPA-A.</p>
       </header>
       <div className="space-y-6 p-4 md:p-6 lg:p-8">
         {saved && <Notice>{saved}</Notice>}
@@ -106,23 +101,31 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
           </section>
         )}
 
-        <section id="approval-route" className="rounded-xl border border-gray-200 bg-white p-5 md:p-6">
-          <h2 className="text-lg font-bold text-gray-900">Jalur Approval FPA &amp; FPA-A</h2>
-          <p className="mb-5 mt-1 text-sm text-gray-500">Pilih pemohon, lalu susun approver dari tahap pertama sampai terakhir. Jalur yang sama berlaku untuk kedua jenis dokumen.</p>
-          <form method="GET" action="/users#approval-route" className="mb-5 flex flex-wrap items-end gap-3">
-            <div className="min-w-48 flex-1">
-              <label htmlFor="route-requester" className="mb-2 block text-sm font-medium">Pemohon</label>
-              <select id="route-requester" name="requester" required defaultValue={requester || ""} className="w-full rounded-lg border bg-white p-2.5">
-                <option value="">Pilih pemohon</option>
-                {accounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}
-              </select>
-            </div>
-            <button type="submit" className="rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-indigo-700">Atur Jalur</button>
-          </form>
-          {requester > 0 && users.some((u) => u.id === requester) && <RouteEditor key={requester} requesterId={requester} initial={routeIds} accounts={accounts} />}
+        <section id="approval-roles" className="rounded-xl border border-gray-200 bg-white p-5 md:p-6">
+          <h2 className="text-lg font-bold text-gray-900">Approval FPA &amp; FPA-A</h2>
+          <p className="mb-5 mt-1 text-sm text-gray-500">
+            Urutan approval berlaku untuk semua pemohon: Atasan langsung (dari Absensi) → Tim IT → Manager IT → Manager FAT (hanya jika ada biaya).
+            Manager IT dan Manager FAT hanya menyetujui, tidak dapat mengajukan.
+          </p>
+          <ActionForm action={saveManagerRolesAction} className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_1fr_auto] md:items-end">
+            {MANAGER_ROLES.map((role) => (
+              <div key={role}>
+                <label htmlFor={`role-${role}`} className="mb-2 block text-sm font-medium">{MANAGER_ROLE_LABEL[role]}</label>
+                <select id={`role-${role}`} name={role} required defaultValue={holders[role]?.id ?? ""} className="w-full rounded-lg border bg-white p-2.5">
+                  <option value="">Pilih akun</option>
+                  {accounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}
+                </select>
+              </div>
+            ))}
+            <SubmitButton className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60">Simpan</SubmitButton>
+          </ActionForm>
+          <div className="mt-5 rounded-lg bg-gray-50 p-4 text-sm text-gray-600">
+            <span className="font-medium text-gray-800">Tim IT</span> (akun berjabatan Admin di divisi IT, cukup satu yang menyetujui):{" "}
+            {timIt.length ? timIt.map((member) => member.full_name).join(", ") : <span className="font-semibold text-red-700">belum ada. Atur jabatan Admin dan divisi IT pada akun anggota Tim IT.</span>}
+          </div>
         </section>
 
-        <UserForm editId={editing?.id ?? 0} editingLocal={Boolean(editing && editing.karyawan_id === null)} values={values} karyawanOptions={karyawanOptions} menus={MENUS} />
+        <UserForm editId={editing?.id ?? 0} editingLocal={Boolean(editing && editing.karyawan_id === null)} values={values} karyawanOptions={karyawanOptions} menus={nonAdminMenus} />
 
         <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
           <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-5 py-4">
@@ -137,10 +140,14 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
               <tbody className="divide-y divide-gray-100">
                 {users.map((account) => {
                   const linkedKaryawan = account.karyawan_id === null ? null : karyawan?.get(Number(account.karyawan_id));
-                  const menus = grantedLabels.get(account.id) ?? [];
                   return (
                     <tr key={account.id}>
-                      <td className="px-5 py-4 font-medium text-gray-900">{account.full_name}{account.id === user.id && <span className="text-xs text-gray-400"> (Anda)</span>}</td>
+                      <td className="px-5 py-4 font-medium text-gray-900">
+                        {account.full_name}{account.id === user.id && <span className="text-xs text-gray-400"> (Anda)</span>}
+                        {MANAGER_ROLES.filter((role) => holders[role]?.id === account.id).map((role) => (
+                          <span key={role} className="ml-2 inline-block rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">{MANAGER_ROLE_LABEL[role]}</span>
+                        ))}
+                      </td>
                       <td className="px-5 py-4 text-gray-600">
                         {account.karyawan_id === null ? (
                           <span className="inline-block rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600">Akun lokal</span>
@@ -160,9 +167,7 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
                       <td className="px-5 py-4"><span className="inline-block rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">{account.role}</span></td>
                       <td className="px-5 py-4 text-gray-600">{account.division || "Belum diisi"}</td>
                       <td className="whitespace-nowrap px-5 py-4">
-                        {account.role === "Admin" ? <span className="text-gray-600">Semua menu</span>
-                          : menus.length === 0 ? <span className="inline-block rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">Belum diatur</span>
-                          : <span className="text-gray-600" title={menus.join(", ")}>{menus.length} dari {MENUS.length} menu</span>}
+                        <span className="text-gray-600">{account.role === "Admin" ? "Semua menu" : (managerIds.has(account.id) ? MANAGER_MENUS.map(menuByKey) : nonAdminMenus).map((menu) => menu.label).join(", ")}</span>
                       </td>
                       <td className="whitespace-nowrap px-5 py-4 text-gray-500">{formatDate(account.created_at, "d M Y H:i")}</td>
                       <td className="whitespace-nowrap px-5 py-4">

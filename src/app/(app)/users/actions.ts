@@ -3,8 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getCurrentUser, UserError } from "@/lib/auth";
-import { saveApprovalRoute } from "@/lib/approval";
-import { positiveInt, str, strs, type ActionState } from "@/lib/form";
+import { saveManagerRoles } from "@/lib/approval";
+import { positiveInt, str, type ActionState } from "@/lib/form";
 import { loadKaryawan, type Karyawan } from "@/lib/identity";
 import { createUser, deleteUser, updateUser } from "@/lib/users";
 
@@ -67,14 +67,13 @@ export async function deleteUserAction(form: FormData): Promise<ActionState> {
   redirect("/users?saved=deleted");
 }
 
-export async function saveRouteAction(form: FormData): Promise<ActionState> {
-  const requester = positiveInt(form, "requester_id");
+export async function saveManagerRolesAction(form: FormData): Promise<ActionState> {
   try {
-    await requireAdmin();
-    await saveApprovalRoute(requester, strs(form, "approver_ids"));
+    const admin = await requireAdmin();
+    await saveManagerRoles({ manager_it: positiveInt(form, "manager_it"), manager_fat: positiveInt(form, "manager_fat") }, admin);
   } catch (error) {
     return fail(error);
   }
-  revalidatePath("/users");
-  redirect(`/users?requester=${requester}&saved=route#approval-route`);
+  revalidatePath("/", "layout");
+  redirect("/users?saved=roles#approval-roles");
 }

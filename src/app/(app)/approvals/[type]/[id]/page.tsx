@@ -8,7 +8,7 @@ import { checklistItems } from "@/lib/checklist";
 import { db, row, rows, type Row } from "@/lib/db";
 import { formatDate } from "@/lib/dates";
 import { fpmDeadline } from "@/lib/deadlines";
-import { approvalTable, detailOrigin, isDetailType, type DetailType } from "@/lib/documents";
+import { approvalTable, detailOrigin, isDetailType, rupiah, type DetailType } from "@/lib/documents";
 import { decodeScopeItems } from "@/lib/scope";
 import { ChecklistPanel, ScopeItemList } from "@/components/ChecklistPanel";
 import { DeadlineBadge, FpmCompletionBadge, Notice, StatusBadge } from "@/components/ui";
@@ -19,8 +19,8 @@ import { adjustDurationAction, fpmEstimateAction, fpmTransitionAction } from "..
 export const metadata: Metadata = { title: "Detail Pengajuan" };
 
 const NOTICES: Record<string, string> = {
-  submitted: "Pengajuan dikirim ke approver tahap pertama.",
-  resubmitted: "Revisi dikirim kembali ke approver tahap pertama.",
+  submitted: "Pengajuan dikirim ke tahap approval pertama.",
+  resubmitted: "Revisi dikirim kembali. Approval dimulai lagi dari tahap pertama.",
 };
 
 function Card({ tone, icon: Icon, title, children }: { tone: "indigo" | "purple" | "emerald" | "gray"; icon: typeof Info; title: string; children: React.ReactNode }) {
@@ -50,8 +50,6 @@ function Creator({ data }: { data: Row }) {
   if (data.creator_username === null) return null;
   return <div className="mt-1 text-xs text-gray-500">{data.creator_role} &middot; @{data.creator_username}</div>;
 }
-
-const rupiah = (value: unknown) => `Rp ${Math.round(Number(value)).toLocaleString("id-ID")}`;
 
 function DurationForm({ type, id, value, label, tone }: { type: "fpa" | "fpaa" | "fpm"; id: number; value: number | null; label: string; tone: "indigo" | "purple" }) {
   const isFpm = type === "fpm";
@@ -190,6 +188,9 @@ export default async function ApprovalDetailPage({ params, searchParams }: PageP
                       <div className="info-label">Estimasi Biaya</div>
                       <div className="info-value text-xl font-bold text-green-600">{Number(data.estimasi_biaya) ? rupiah(data.estimasi_biaya) : "Gratis / Internal"}</div>
                       <div className="text-xs text-gray-500">{data.status_biaya}</div>
+                      {data.estimasi_biaya_admin !== null && (
+                        <div className="mt-1 flex items-center justify-end gap-1 text-sm font-semibold text-indigo-700"><ShieldCheck className="h-3 w-3" aria-hidden="true" />Koreksi budget: {rupiah(data.estimasi_biaya_admin)}</div>
+                      )}
                     </div>
                   </div>
                   {canAdjustDuration && <DurationForm type="fpa" id={id} value={data.estimasi_durasi_admin} label="Koreksi estimasi hari (Admin)" tone="indigo" />}
@@ -248,6 +249,9 @@ export default async function ApprovalDetailPage({ params, searchParams }: PageP
                     <div>
                       <div className="info-label">Tambahan Biaya</div>
                       <div className="text-xl font-bold text-gray-900">{Number(data.tambahan_biaya) ? rupiah(data.tambahan_biaya) : "-"}</div>
+                      {data.tambahan_biaya_admin !== null && (
+                        <div className="mt-1 flex items-center gap-1 text-sm font-semibold text-purple-700"><ShieldCheck className="h-3 w-3" aria-hidden="true" />Koreksi budget: {rupiah(data.tambahan_biaya_admin)}</div>
+                      )}
                     </div>
                   </div>
                 </div>

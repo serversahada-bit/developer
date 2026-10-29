@@ -30,4 +30,12 @@ export function indexedRows(form: FormData, prefix: string, fields: string[]): R
   return [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([, entry]) => entry);
 }
 
+// Rupiah typed as "1.500.000" or "1500000,50" into the decimal string MySQL stores; null when empty,
+// undefined when invalid.
+export function parseRupiah(raw: string): string | null | undefined {
+  const value = raw.trim().replace(/Rp|\.| /g, "").replace(",", ".");
+  if (value === "") return null;
+  return /^\d{1,13}(?:\.\d{1,2})?$/.test(value) ? value : undefined;
+}
+
 export type ActionState = { error?: string; errors?: string[]; success?: string } | null;

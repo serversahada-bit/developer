@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requireActionUser, UserError } from "@/lib/auth";
-import { activateLegacyApproval, adjustEstimatedDuration, decideApproval, setFpmEstimate, transitionFpmStatus } from "@/lib/approval";
+import { activateLegacyApproval, adjustBudget, adjustEstimatedDuration, decideApproval, setFpmEstimate, transitionFpmStatus } from "@/lib/approval";
 import { toggleChecklistItem } from "@/lib/checklist";
 import { isDocType } from "@/lib/documents";
 import { deliverDocumentApprovalEmail } from "@/lib/email";
@@ -49,7 +49,18 @@ export async function activateApprovalAction(form: FormData): Promise<ActionStat
     const user = await requireActionUser();
     target = docTarget(form);
     await activateLegacyApproval(target.type, target.id, user);
-    return "Jalur approval diaktifkan. Menunggu approver tahap pertama.";
+    return "Jalur approval diaktifkan.";
+  }, async () => {
+    if (target) await deliverDocumentApprovalEmail(target.type, target.id);
+  });
+}
+
+export async function budgetAction(form: FormData): Promise<ActionState> {
+  let target: ReturnType<typeof docTarget> | null = null;
+  return run(async () => {
+    const user = await requireActionUser();
+    target = docTarget(form);
+    return adjustBudget(target.type, target.id, user, str(form, "budget"), str(form, "reason"));
   }, async () => {
     if (target) await deliverDocumentApprovalEmail(target.type, target.id);
   });

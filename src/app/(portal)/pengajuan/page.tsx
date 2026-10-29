@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowLeft, ArrowRight, FileSignature, FileText, Headset, Wrench } from "lucide-react";
-import { canUseMenu, requireUser } from "@/lib/auth";
+import { canUseMenu, isAdmin, requireUser } from "@/lib/auth";
 import { AccessDenied } from "@/components/ui";
 
 export const metadata: Metadata = { title: "Portal Pengajuan Layanan IT" };
@@ -47,8 +47,9 @@ export default async function PengajuanPage() {
           ))}
         </div>
         <div className="mt-12 text-center">
-          <Link href="/" className="inline-flex items-center gap-2 text-sm font-medium text-gray-500 transition-colors hover:text-gray-800">
-            <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Dashboard Tim IT
+          {/* Non-Admins land here, so "/" would only come back; they follow their own documents instead. */}
+          <Link href={isAdmin(user) ? "/" : "/approvals?view=mine"} className="inline-flex items-center gap-2 text-sm font-medium text-gray-500 transition-colors hover:text-gray-800">
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" /> {isAdmin(user) ? "Dashboard Tim IT" : "Status Pengajuan Saya"}
           </Link>
         </div>
       </div>

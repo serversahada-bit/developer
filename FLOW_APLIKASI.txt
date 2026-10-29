@@ -1,0 +1,446 @@
+===============================================================================
+  RANGKUMAN FLOW APLIKASI - IT PSLU DEVELOPER (Next.js)
+===============================================================================
+
+Aplikasi internal tim IT PSLU untuk:
+  - mencatat pekerjaan harian (Activity Log, My Tasks, Projects, Calendar, Reports),
+  - menerima pengajuan layanan IT dari divisi lain (FPA, FPA-A, FPM),
+  - menjalankan approval berjenjang sampai pengajuan menjadi project dan checklist.
+
+Stack: Next.js 16 (App Router) + React 19 + Tailwind 4 + mysql2 + jose (JWT).
+Port dari aplikasi PHP "developer-main". Database dan skemanya sama, jadi versi
+PHP dan Next.js bisa berjalan berdampingan di data yang sama.
+
+
+-------------------------------------------------------------------------------
+1. DUA DATABASE
+-------------------------------------------------------------------------------
+
+  a) Database aplikasi Developer  (env DB_*, default u313218767_dev)
+     Semua data milik aplikasi ini: users, user_menu_access, daily_logs,
+     projects, fpa_submissions, fpa_a_submissions, fpm_submissions,
+     approval_routes, approval_runs, approval_steps, approval_events,
+     approval_email_queue, submission_checklist_items.
+
+  b) Database aplikasi Absensi    (env ABSEN_DB_*, default absensi)
+     Hanya tabel "karyawan" dan "tim_saya" yang dibaca (SELECT saja), untuk:
+       - login karyawan (username/Gmail + password Absensi),
+       - cek status karyawan (Non-Aktif ditolak),
+       - dropdown "Pilih karyawan" di menu Users,
+       - atasan langsung pemohon FPA / FPA-A (tim_saya).
+     Satu-satunya file yang membaca DB ini: src/lib/identity.ts.
+     Koneksinya dibuka lazy (saat pertama dibutuhkan), jadi kalau DB Absensi
+     mati, halaman selain login/SSO/Users/kirim FPA tetap berjalan.
+
+  Koneksi diatur di src/lib/db.ts: pool mysql2, zona waktu WIB (+07:00) per
+  koneksi, dateStrings aktif, helper rows/row/scalar/exec/transaction.
+
+
+-------------------------------------------------------------------------------
+2. ALUR MASUK (AUTENTIKASI)
+-------------------------------------------------------------------------------
+
+  Setiap request
+  --------------
+  src/proxy.ts mengecek cookie "developer_session" (JWT HS256, ditandatangani
+  SESSION_SECRET, berlaku 7 hari).
+    - Path publik tanpa cek: /login, /sso, /api/cron
+    - Cookie tidak valid  -> redirect ke /login?next=<halaman tujuan>
+    - Cookie valid        -> lanjut ke halaman
+  Cookie hanya berisi users.id. Data akun (jabatan, divisi, menu) dibaca ulang
+  dari database pada setiap request (getCurrentUser di src/lib/auth.ts), jadi
+  perubahan oleh Admin langsung berlaku.
+
+  A. Login biasa (/login)
+  -----------------------
+  User mengisi username/Gmail + password -> loginAction -> authenticateLogin:
+    1. Cek akun LOKAL: users.username cocok DAN karyawan_id IS NULL, lalu
+       bcrypt password_hash. (Dipakai Administrator lokal, supaya tetap bisa
+       login walau DB Absensi mati.)
+    2. Kalau bukan akun lokal -> cek ke DB Absensi (tabel karyawan):
+         - ada "@"  -> wajib Gmail, dicari di kolom email
+         - tanpa "@" -> dicari di kolom nama_user
+         - password dicocokkan (bcrypt; plain-text lama juga didukung)
+         - status_karyawan = 'Non-Aktif' -> ditolak
+    3. Karyawan valid -> cari users.karyawan_id = karyawan.id
+         - tidak ada -> akun dibuat otomatis (lihat "E. Akun otomatis")
+    4. Berhasil -> cookie sesi dibuat -> redirect ke ?next atau "/".
+
+  B. SSO dari Great / absen-main (/sso?token=...&next=...)
+  --------------------------------------------------------
+    1. Token JWT diverifikasi dengan SSO_SECRET (harus sama dengan di Great):
+       aud "developer", umur maksimal 120 detik, jti hanya bisa dipakai sekali.
+    2. user_id di token = karyawan.id -> status dicek ulang di DB Absensi.
+    3. Cari akun Developer yang terhubung (users.karyawan_id). Kalau belum
+       ada -> akun dibuat otomatis (lihat "E. Akun otomatis").
+    4. Berhasil -> cookie sesi dibuat -> redirect ke "next".
+       Gagal -> /login?error=sso | inactive | unavailable
+
+  C. Halaman awal "/"
+  -------------------
+  Diarahkan ke menu PERTAMA milik akun: Admin -> Projects, selain Admin ->
+  Buat Pengajuan. Kalau tidak punya menu sama sekali -> tampil "Akses
+  dibatasi".
+
+  D. Logout (/logout, POST)
+  -------------------------
+  Cookie sesi dihapus -> redirect ke /login.
+
+  E. Akun otomatis (ensureUserForKaryawan di src/lib/users.ts)
+  ------------------------------------------------------------
+  Karyawan aktif yang belum punya akun dibuatkan akun saat pertama kali
+  masuk (login biasa maupun SSO), diisi dari tabel karyawan di DB Absensi:
+    - Nama     : karyawan.nama
+    - Username : karyawan.nama_user (atau bagian depan email). Kalau sudah
+                 dipakai -> ditambah ".<id karyawan>", terakhir
+                 "karyawan<id>".
+    - Email    : karyawan.email, dikosongkan kalau tidak valid atau sudah
+                 dipakai user lain.
+    - Jabatan  : dari karyawan.jabatan -> mengandung "manager" = Manager,
+                 "spv"/"supervisor" = SPV, selain itu Koordinator.
+    - Divisi   : dari karyawan.organisasi kalau cocok dengan daftar divisi,
+                 selain itu dikosongkan (FPA / FPA-A meminta Admin
+                 mengisinya dulu).
+  Akun otomatis belum punya jalur approval, jadi Admin tetap perlu
+  mengaturnya di menu Users sebelum akun itu bisa mengirim FPA / FPA-A.
+
+
+-------------------------------------------------------------------------------
+3. HAK AKSES
+-------------------------------------------------------------------------------
+
+  Jabatan (users.role): Manager, SPV, Koordinator, Admin.
+    - Admin  : otomatis punya semua menu + menu Users + aksi khusus Admin.
+    - Lainnya: menu tetap Buat Pengajuan, Task, dan Approvals
+               (NON_ADMIN_MENUS di src/lib/menus.ts). Tidak bisa dicentang
+               per user. Tabel user_menu_access tetap diisi menu yang sama
+               supaya aplikasi PHP menampilkan menu yang sama.
+    - Manager IT / Manager FAT yang ditunjuk Admin (tabel approval_roles):
+               hanya Approvals dan Task (MANAGER_MENUS). Mereka murni
+               approver dan tidak bisa mengajukan FPA / FPA-A.
+
+  Daftar menu (src/lib/menus.ts):
+    projects      -> /projects        Projects
+    activity_log  -> /activity        Activity Log
+    my_tasks      -> /my-tasks        My Tasks
+    tasks         -> /tasks           Task (board pengajuan berjalan)
+    calendar      -> /calendar        Calendar
+    reports       -> /reports         Reports (+ export Excel)
+    approvals     -> /approvals       Approvals
+    pengajuan     -> /pengajuan       Buat Pengajuan (FPA / FPA-A / FPM)
+
+  Setiap halaman mengecek menunya sendiri (canUseMenu). Setiap server action
+  mengecek ulang akun dan menunya (requireActionUser), jadi tidak bisa
+  dilewati dengan memanggil action langsung.
+
+  Pengecualian: halaman detail dokumen /approvals/[type]/[id] tidak butuh
+  menu, karena pemohon & approver membukanya dari link email. Aksesnya dicek
+  per dokumen (pemohon, approver di jalurnya, atau Admin). FPM boleh dilihat
+  semua akun yang login.
+
+
+-------------------------------------------------------------------------------
+4. MANAJEMEN USER (menu Users, khusus Admin)
+-------------------------------------------------------------------------------
+
+  Tambah user
+    1. Admin memilih karyawan dari dropdown (data dari DB Absensi). Karyawan
+       Non-Aktif dan yang sudah punya akun tidak ditampilkan.
+    2. Nama, username, email terisi otomatis dari data karyawan (bisa diubah).
+    3. Admin memilih jabatan dan divisi. Menu mengikuti jabatan.
+    4. Disimpan ke tabel users (+ karyawan_id) dan user_menu_access.
+       User baru TIDAK punya password lokal; login memakai akun Absensi.
+
+  Edit user
+    - Akun yang sudah terhubung karyawan boleh dipindah ke karyawan lain,
+      tapi tidak bisa dilepas.
+    - Akun lokal (tanpa karyawan) boleh dihubungkan, atau tetap lokal dan
+      ganti password.
+    - Admin terakhir tidak bisa diturunkan jabatannya.
+
+  Hapus user
+    - Tidak bisa menghapus diri sendiri atau Admin terakhir.
+    - Ditolak kalau user masih tercatat di jalur approval / riwayat dokumen.
+
+  Approval FPA & FPA-A
+    - Admin menunjuk 1 akun Manager IT dan 1 akun Manager FAT (tabel
+      approval_roles). Dokumen yang sedang menunggu peran tersebut langsung
+      dialihkan ke akun baru, dan akun baru menerima email.
+    - Tim IT = semua akun berjabatan Admin di divisi IT (tidak perlu
+      ditunjuk). Halaman Users menampilkan anggotanya.
+    - Jalur per pemohon yang lama (approval_routes) tidak dipakai lagi.
+    - Akun yang sedang menjadi Manager IT / FAT tidak bisa dihapus.
+
+
+-------------------------------------------------------------------------------
+5. PENGAJUAN LAYANAN IT (menu Buat Pengajuan, /pengajuan)
+-------------------------------------------------------------------------------
+
+  Syarat: akun punya menu "pengajuan" dan divisinya sudah diatur Admin.
+
+  FPA  - Form Pengajuan Aplikasi (aplikasi/fitur baru)
+         Nomor otomatis: FPA/ITS/001/MM/YYYY (urut per bulan)
+         Isi: nama head, nama aplikasi, masalah, daftar fitur/solusi (nama +
+         keterangan per item), urgensi, biaya, skala, estimasi durasi, dsb.
+         Bisa ditandai "rahasia".
+
+  FPA-A - Form Pengajuan Addendum (perubahan atas FPA yang sudah ada)
+         Nomor otomatis: FPA-A/ITS/001/MM/YYYY
+         Merujuk nomor FPA utama (dipilih atau diketik manual). Isi: jenis
+         perubahan, daftar fitur/scope, tambahan waktu, tambahan biaya.
+
+  FPM  - Form Permintaan Maintenance (laporan bug/kendala)
+         Tidak melalui approval. Langsung masuk dengan status "Open".
+
+  Di atas form ditampilkan perkiraan jalur approval pemohon, beserta hal yang
+  membuat pengajuan belum bisa dikirim (Manager belum ditunjuk, DB Absensi
+  tidak terbaca, belum ada anggota Tim IT).
+
+  Saat FPA / FPA-A dikirim:
+    1. Atasan langsung dibaca dari DB Absensi (tabel tim_saya), DI LUAR
+       transaksi. Atasan yang belum punya akun dibuatkan akun otomatis.
+       DB Absensi tidak terbaca -> pengajuan ditolak, "coba lagi".
+    2. Dalam satu transaksi database:
+         - dokumen disimpan, status_dokumen = 'Diajukan'
+         - dicek: Manager IT & FAT sudah ditunjuk, pemohon bukan salah satu
+           Manager, ada anggota Tim IT
+         - approval_runs dibuat (state 'pending', cycle 1)
+         - approval_events mencatat "submit" + snapshot dokumen
+         - tahap pertama yang perlu keputusan dibuat (lihat bagian 6)
+         - email untuk giliran tersebut dimasukkan ke antrean
+  Setelah transaksi selesai, email langsung dicoba dikirim, lalu user
+  diarahkan ke halaman detail dokumen.
+
+
+-------------------------------------------------------------------------------
+6. ALUR APPROVAL FPA / FPA-A
+-------------------------------------------------------------------------------
+
+   Pemohon kirim
+        |
+        v
+   [1] Atasan langsung (tim_saya di DB Absensi)
+        dilewati: pemohon tanpa atasan / atasan Non-Aktif / akun lokal
+        |
+        v
+   [2] Tim IT (Admin + divisi IT), cukup satu anggota yang memutuskan
+        dilewati: pemohon anggota Tim IT
+        |
+        v
+   [3] Manager IT
+        |
+        v
+   [4] Manager FAT, hanya kalau biaya akhir > 0
+        |
+        v
+   DISETUJUI FINAL
+        -> status_dokumen = 'Disetujui'
+        -> project baru dibuat otomatis (kategori FPA, status Active)
+        -> checklist dibuat dari daftar fitur/scope dokumen
+
+  Tombol per tahap (halaman /approvals/[type]/[id]):
+                 Setujui   Kembalikan (revisi)   Tolak Final   Ubah budget
+    Atasan          v             v                   -             -
+    Tim IT          v             v                   -             v
+    Manager IT      v             v                   v             v
+    Manager FAT     v             v                   -             -
+
+  Cara tahap dibentuk (openNextStage di src/lib/approval.ts):
+    - Tahap dibuat satu per satu saat gilirannya tiba, tidak sekaligus.
+    - Tahap yang dilewati tetap dicatat (state 'skipped' + alasannya).
+    - Dua tahap BERURUTAN yang dipegang orang yang sama cukup diputuskan
+      sekali (contoh: atasan = Manager IT dan Tim IT dilewati). Kalau tidak
+      berurutan, orang itu menyetujui dua kali (contoh: atasan = Manager
+      FAT: sekali sebagai atasan, sekali sebagai FAT).
+    - Tahap Tim IT disimpan tanpa approver_id; anggota yang memutuskan
+      dicatat sebagai approver-nya.
+
+  Budget:
+    - Tim IT / Manager IT bisa mengubah budget saat giliran mereka, alasan
+      wajib. Nilai asli pemohon tetap; koreksi masuk ke estimasi_biaya_admin
+      (FPA) / tambahan_biaya_admin (FPA-A). Dikosongkan = kembali ke nilai
+      pemohon. Tidak perlu persetujuan pemohon; cukup riwayat + email.
+    - Biaya akhir = koreksi terakhir, atau nilai pemohon (FPA "Tanpa Biaya"
+      dihitung 0). Biaya akhir > 0 -> Manager FAT ikut menyetujui.
+
+  KEMBALIKAN UNTUK REVISI (semua tahap, catatan wajib)
+    -> status_dokumen = 'Revisi', run state 'revision'
+    -> pemohon mengedit lewat /pengajuan/fpa?revision=<id>; budget di form
+       sudah mengikuti koreksi terakhir
+    -> kirim ulang = cycle +1, atasan dibaca ulang, mulai lagi dari tahap [1]
+
+  TOLAK FINAL (hanya Manager IT, catatan wajib)
+    -> status_dokumen = 'Ditolak', selesai
+
+  Aturan:
+    - Hanya yang sedang mendapat giliran yang bisa memutuskan.
+    - Pemohon tidak bisa menyetujui dokumennya sendiri.
+    - Kalau tahap sudah berubah di tab lain -> "Muat ulang halaman".
+    - Semua keputusan, perubahan budget, dan pengalihan approver tercatat di
+      approval_events (riwayat di halaman detail).
+    - Dokumen lama yang tahapnya dari approval_routes (stage NULL) selesai
+      dengan jalur lamanya. Begitu dikirim ulang setelah revisi, dokumen itu
+      memakai alur baru.
+
+  Aksi tambahan Admin di halaman detail:
+    - Koreksi estimasi hari selama dokumen masih menunggu approval. Nilai
+      asli pemohon tetap disimpan; koreksi masuk ke kolom *_admin.
+    - Aktifkan jalur approval untuk dokumen lama (dari versi PHP) yang belum
+      punya approval_runs. Jalurnya memakai alur di atas.
+
+  Halaman Approvals (/approvals) punya 3 tampilan:
+    pending = menunggu keputusan saya (anggota Tim IT juga melihat dokumen di
+              tahap Tim IT) | mine = pengajuan saya | all = semua
+    (non-Admin hanya melihat dokumen miliknya atau yang ia setujui).
+
+
+-------------------------------------------------------------------------------
+7. SETELAH DISETUJUI: CHECKLIST PENGERJAAN
+-------------------------------------------------------------------------------
+
+  Setiap item fitur/scope menjadi satu baris checklist:
+
+    1. Admin/Developer mencentang "selesai dikerjakan" (dev).
+    2. Pemohon menguji:
+         - OK      -> item dianggap selesai ditest
+         - Belum sesuai (catatan wajib) -> item kembali ke Developer
+    3. Kalau pemohon tidak merespons 7 hari setelah dev selesai, item
+       otomatis dianggap sudah ditest (auto_completed).
+    4. Kalau Developer membatalkan centang dev, status test ikut direset.
+
+  Progres checklist tampil di halaman detail dan di board Task.
+
+
+-------------------------------------------------------------------------------
+8. FPM (MAINTENANCE) - ALUR STATUS
+-------------------------------------------------------------------------------
+
+   Open  --(Admin: Tandai Diproses)-->  In Progress  --(Admin: Selesaikan)-->  Closed
+                                        (diproses_at dicatat)                  (tanggal_selesai dicatat)
+
+  - Admin bisa mengisi estimasi hari (1-999) saat Open / In Progress.
+  - Deadline FPM = tanggal mulai diproses + estimasi hari.
+  - Setelah Closed, dihitung berapa hari terlambat dari deadline.
+
+
+-------------------------------------------------------------------------------
+9. BOARD TASK (/tasks)
+-------------------------------------------------------------------------------
+
+  Daftar semua pengajuan yang masih berjalan, bisa dilihat semua akun yang
+  punya menu "tasks":
+    - FPA / FPA-A berstatus Diajukan, Diverifikasi, Disetujui, atau Revisi.
+    - Deadline FPA   = tanggal_pengajuan + estimasi durasi (koreksi Admin
+                       kalau ada) + tambahan waktu dari FPA-A yang disetujui.
+    - Deadline FPA-A = tanggal dibuat + tambahan waktu.
+    - FPA-A ditampilkan di bawah kartu FPA induknya.
+    - Urut berdasarkan deadline terdekat.
+    - Dokumen "rahasia": hanya nomor/tanggal/deadline yang terlihat, kecuali
+      untuk pemohon, approver di jalurnya, atau Admin.
+    - Bagian FPM: daftar aktif (Open/In Progress) dan riwayat Closed.
+
+
+-------------------------------------------------------------------------------
+10. PENCATATAN KERJA HARIAN TIM IT
+-------------------------------------------------------------------------------
+
+  Semua menu di bawah memakai tabel daily_logs dan projects. Aksinya ada di
+  src/app/(app)/log-actions.ts dan boleh dipakai akun yang punya salah satu
+  menu projects / activity_log / my_tasks.
+
+  Activity Log (/activity)  : semua task harian; tambah, edit, hapus.
+  My Tasks     (/my-tasks)  : task yang belum Selesai; centang selesai.
+  Projects     (/projects)  : daftar project + progres (task selesai/total).
+                              Project dari FPA yang disetujui tidak bisa
+                              dihapus.
+  Calendar     (/calendar)  : task per tanggal dalam tampilan bulanan.
+  Reports      (/reports)   : rekap task per rentang tanggal, dikelompokkan
+                              per project. Bisa export ke Excel lewat
+                              /reports/export (file .xls).
+
+  Status task: Belum Selesai -> Dalam Proses -> Selesai (completed_at dicatat).
+
+
+-------------------------------------------------------------------------------
+11. EMAIL NOTIFIKASI APPROVAL
+-------------------------------------------------------------------------------
+
+  1. Setiap kejadian (approval_events) memasukkan email ke
+     approval_email_queue dalam transaksi yang sama, jadi kalau transaksi
+     batal, email tidak ikut terkirim. Satu orang menerima paling banyak
+     satu email per kejadian.
+       kind 'turn' = minta keputusan, ke giliran berikutnya (tahap Tim IT:
+                     ke semua anggota Tim IT)
+       kind 'info' = pemberitahuan
+
+     Kejadian                    Pemohon  Approver yg sudah lewat  Giliran berikutnya
+     Naik tahap (setuju)         info     -                        turn
+     Budget diubah               info     info                     -
+     Dikembalikan untuk revisi   info     info                     -
+     Pemohon kirim revisi        -        info                     turn
+     Disetujui final / ditolak   info     info                     -
+     Manager dialihkan Admin     -        -                        turn
+     (Yang melakukan aksi tidak menerima email atas aksinya sendiri.)
+
+  2. Setelah transaksi selesai, aplikasi langsung mencoba mengirim via SMTP
+     (env MAIL_*, hanya jalan kalau MAIL_ENABLED=true).
+  3. Kalau gagal (SMTP error / email penerima kosong) -> tetap di antrean,
+     dicoba lagi 5 menit kemudian.
+  4. Pengiriman ulang terjadwal lewat cron:
+        POST /api/cron/approval-emails
+        Header: Authorization: Bearer <CRON_SECRET>
+     (Disarankan dijalankan tiap menit.)
+  5. Sebelum mengirim, email 'turn' dicek ulang. Kalau gilirannya sudah
+     lewat, ditandai 'skipped'.
+  Isi email berisi link: APP_BASE_URL + /approvals/<type>/<id> (email revisi
+  ke pemohon langsung ke form revisi).
+
+
+-------------------------------------------------------------------------------
+12. VARIABEL ENVIRONMENT
+-------------------------------------------------------------------------------
+
+  DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
+      -> database aplikasi Developer
+  ABSEN_DB_HOST, ABSEN_DB_PORT, ABSEN_DB_USER, ABSEN_DB_PASSWORD, ABSEN_DB_NAME
+      -> database Absensi (tabel karyawan; cukup user read-only)
+  SESSION_SECRET   -> kunci cookie sesi, wajib, minimal 32 karakter
+  SSO_SECRET       -> sama persis dengan Great; kosong = /sso nonaktif
+  GREAT_URL        -> menampilkan tombol "Masuk lewat Great" di halaman login
+  APP_BASE_URL     -> URL publik aplikasi (link email & redirect SSO)
+  CRON_SECRET      -> token untuk /api/cron/approval-emails (minimal 32 karakter)
+  MAIL_ENABLED, MAIL_HOST, MAIL_PORT, MAIL_ENCRYPTION, MAIL_USERNAME,
+  MAIL_PASSWORD, MAIL_FROM_EMAIL, MAIL_FROM_NAME
+      -> pengiriman email SMTP
+
+  Lokal: diisi di .env.local (tidak ikut ke Git).
+  Production (Coolify): diisi di menu Environment Variables aplikasi, lalu
+  redeploy. Jangan memakai 127.0.0.1 untuk host database di dalam container.
+
+
+-------------------------------------------------------------------------------
+13. PETA FILE PENTING
+-------------------------------------------------------------------------------
+
+  src/proxy.ts                      cek cookie sesi untuk setiap request
+  src/lib/db.ts                     koneksi 2 database
+  src/lib/session.ts                buat/verifikasi cookie sesi JWT
+  src/lib/auth.ts                   akun aktif, hak menu, login
+  src/lib/identity.ts               baca DB Absensi (karyawan, tim_saya)
+  src/lib/sso.ts                    verifikasi token SSO dari Great
+  src/lib/menus.ts                  definisi menu, jabatan, divisi
+  src/lib/users.ts                  tambah/edit/hapus user
+  src/lib/submission.ts             simpan FPA, FPA-A, FPM, revisi
+  src/lib/approval.ts               tahap & keputusan approval, budget,
+                                    Manager IT/FAT, status FPM
+  src/lib/checklist.ts              checklist pengerjaan setelah disetujui
+  src/lib/email.ts                  antrean & pengiriman email
+  src/lib/deadlines.ts              hitung deadline FPA/FPA-A/FPM
+  src/app/login, sso, logout        masuk & keluar
+  src/app/(app)/...                 halaman dengan sidebar
+  src/app/(portal)/pengajuan/...    portal & form pengajuan
+  src/app/api/cron/approval-emails  kirim ulang antrean email
+  migrations/                       SQL perubahan database, dijalankan manual
+                                    sebelum deploy (urut nama file)
+
+===============================================================================

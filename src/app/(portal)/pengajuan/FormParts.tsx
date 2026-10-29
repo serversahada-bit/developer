@@ -5,16 +5,12 @@ import Link from "next/link";
 import { Hash, Plus, Send, Trash2, X } from "lucide-react";
 import type { ScopeItem } from "@/lib/scope";
 
-export interface FormRouteStep {
-  approver_name: string;
-  state?: string;
-  note?: string | null;
-}
-
 export interface FormContext {
   user: { full_name: string; role: string; username: string; division: string | null };
-  route: FormRouteStep[];
-  revision: { cycle: number } | null;
+  // The approval stages the submission would go through, and what stops it from being sent.
+  route: string[];
+  routeProblems: string[];
+  revision: { cycle: number; notes: { approver_name: string; note: string | null }[] } | null;
 }
 
 export function FormHeader({ icon, tone, title, subtitle, badge }: { icon: ReactNode; tone: "indigo" | "purple" | "emerald"; title: string; subtitle: string; badge: ReactNode }) {
@@ -51,19 +47,16 @@ export function ApprovalNotice({ context }: { context: FormContext }) {
       {context.revision && (
         <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
           <strong>Revisi pengajuan · Putaran {context.revision.cycle}</strong>
-          <p className="mt-1">Perbaiki isian di bawah, lalu kirim kembali. Persetujuan dimulai dari tahap pertama.</p>
-          {context.route.filter((step) => step.state === "revision").map((step, i) => (
+          <p className="mt-1">Perbaiki isian di bawah, lalu kirim kembali. Persetujuan dimulai lagi dari tahap pertama. Budget sudah mengikuti koreksi terakhir dari Tim IT / Manager IT, jika ada.</p>
+          {context.revision.notes.map((step, i) => (
             <p key={i} className="mt-2 whitespace-pre-line">{step.approver_name}: {step.note}</p>
           ))}
         </div>
       )}
       <div className="mb-6 rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-900">
         <strong>Jalur approval</strong>
-        <p className="mt-1">
-          {context.route.length
-            ? context.route.map((step) => step.approver_name).join(" → ")
-            : "Jalur approval belum diatur. Hubungi Admin untuk mengaturnya melalui menu Users sebelum mengirim pengajuan."}
-        </p>
+        <p className="mt-1">{context.route.join(" → ")}</p>
+        {context.routeProblems.map((problem) => <p key={problem} className="mt-2 font-medium text-red-700">{problem}</p>)}
       </div>
     </>
   );
