@@ -6,6 +6,8 @@ import { approvalRun, approvalSteps, resolveAtasan, restartApproval, startApprov
 import { ScopeError, decodeScopeItems, encodeScopeItems, parseScopeItems, scopeItemsForRevision, type ScopeItem } from "./scope";
 import { indexedRows, parseRupiah, str, strs } from "./form";
 import { isDateString, wibDateTime } from "./dates";
+import { queueFpmEmails } from "./email";
+import { canSubmitApproval } from "./menus";
 
 function text(form: FormData, key: string, max = 10000, required = false): string {
   const value = str(form, key).trim();
@@ -83,6 +85,7 @@ function submissionValues(type: DocType, form: FormData, user: CurrentUser): Rec
 }
 
 export async function saveApprovalSubmission(type: DocType, form: FormData, user: CurrentUser, revisionId = 0, expectedCycle = 0): Promise<number> {
+  if (!revisionId && !canSubmitApproval(user)) throw new UserError("Jabatan Staff hanya dapat mengajukan FPM. FPA / FPA-A hanya untuk jabatan selain Staff.");
   const table = approvalTable(type);
   const data = submissionValues(type, form, user);
   // Read from Absensi outside the transaction; a revision re-reads it, as the supervisor may have changed.
@@ -155,7 +158,8 @@ export { approvalSteps };
 
 const FPM_KENDALA = ["Bug/Error", "Performa Lambat", "Perubahan Data"];
 
-export async function saveFpm(form: FormData, user: CurrentUser): Promise<void> {
+// Returns the new report's id; every Tim IT member is mailed about it.
+export async function saveFpm(form: FormData, user: CurrentUser): Promise<number> {
   const namaSistem = text(form, "nama_sistem", 200, true);
   const tanggal = text(form, "tanggal_kejadian", 10, true);
   if (!isDateString(tanggal)) throw new UserError("Tanggal kejadian tidak valid.");
@@ -169,6 +173,10 @@ export async function saveFpm(form: FormData, user: CurrentUser): Promise<void> 
   const jenis = [...new Set(kendala)].join(", ");
   if ([...jenis].length > 200) throw new UserError("Jenis kendala terlalu panjang.");
   const deskripsi = text(form, "deskripsi_kendala", 10000, true);
-  await exec(db, `INSERT INTO fpm_submissions (created_by_user_id, nama_sistem, nama_pelapor, tanggal_kejadian, jenis_kendala, deskripsi_kendala)
-    VALUES (?, ?, ?, ?, ?, ?)`, [user.id, namaSistem, user.full_name, tanggal, jenis, deskripsi]);
+  return transaction(async (tx) => {
+    const result = await exec(tx, `INSERT INTO fpm_submissions (created_by_user_id, nama_sistem, nama_pelapor, tanggal_kejadian, jenis_kendala, deskripsi_kendala)
+      VALUES (?, ?, ?, ?, ?, ?)`, [user.id, namaSistem, user.full_name, tanggal, jenis, deskripsi]);
+    await queueFpmEmails(tx, result.insertId, "submitted", user.id);
+    return result.insertId;
+  });
 }

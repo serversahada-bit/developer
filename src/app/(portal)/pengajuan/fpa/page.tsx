@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { canUseMenu, requireUser } from "@/lib/auth";
 import { todayWib } from "@/lib/dates";
-import { AccessDenied } from "@/components/ui";
+import { canSubmitApproval } from "@/lib/menus";
+import { AccessDenied, StaffFpmOnly } from "@/components/ui";
 import { loadFormContext, revisionIdOf } from "../context";
 import FpaForm, { type FpaValues } from "./FpaForm";
 
@@ -13,6 +14,7 @@ export default async function FpaPage({ searchParams }: PageProps<"/pengajuan/fp
   const revisionId = revisionIdOf(revisionParam);
   // A revision is reachable from the detail page without the Pengajuan menu; ownership is checked below.
   if (!revisionId && !canUseMenu(user, "pengajuan")) return <AccessDenied user={user} />;
+  if (!revisionId && !canSubmitApproval(user)) return <StaffFpmOnly />;
 
   const { context, revision, error } = await loadFormContext("fpa", user, revisionParam);
   if (error) return <p className="mx-auto mt-16 max-w-xl rounded-xl border border-red-200 bg-red-50 p-6 text-red-800">{error}</p>;

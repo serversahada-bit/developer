@@ -1,17 +1,18 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowLeft, ArrowRight, FileSignature, FileText, Headset, Wrench } from "lucide-react";
+import { ArrowLeft, ArrowRight, FileSignature, FileText, Headset, Lock, Wrench } from "lucide-react";
 import { canUseMenu, isAdmin, requireUser } from "@/lib/auth";
+import { canSubmitApproval, STAFF_FPA_NOTICE } from "@/lib/menus";
 import { AccessDenied } from "@/components/ui";
 
 export const metadata: Metadata = { title: "Portal Pengajuan Layanan IT" };
 
 const FORMS = [
-  { href: "/pengajuan/fpa", icon: FileText, name: "FPA", subtitle: "Pengajuan Aplikasi Baru", tone: "indigo",
+  { href: "/pengajuan/fpa", icon: FileText, name: "FPA", subtitle: "Pengajuan Aplikasi Baru", tone: "indigo", approval: true,
     text: "Gunakan formulir ini untuk mengajukan pembuatan atau pembelian aplikasi / sistem IT yang baru dari awal. Login diperlukan; identitas pemohon otomatis mengikuti akun Anda." },
-  { href: "/pengajuan/fpa-a", icon: FileSignature, name: "FPA-A", subtitle: "Adendum (Perubahan)", tone: "purple",
+  { href: "/pengajuan/fpa-a", icon: FileSignature, name: "FPA-A", subtitle: "Adendum (Perubahan)", tone: "purple", approval: true,
     text: "Gunakan formulir ini jika Anda ingin mengajukan perubahan ruang lingkup, jadwal, atau anggaran pada FPA yang sudah berjalan." },
-  { href: "/pengajuan/fpm", icon: Wrench, name: "FPM", subtitle: "Permintaan Maintenance", tone: "emerald",
+  { href: "/pengajuan/fpm", icon: Wrench, name: "FPM", subtitle: "Permintaan Maintenance", tone: "emerald", approval: false,
     text: "Gunakan formulir ini untuk melaporkan adanya error (bug), gangguan performa, atau permintaan perbaikan rutin pada aplikasi." },
 ] as const;
 
@@ -24,6 +25,7 @@ const TONES = {
 export default async function PengajuanPage() {
   const user = await requireUser("/pengajuan");
   if (!canUseMenu(user, "pengajuan")) return <AccessDenied user={user} />;
+  const locked = (approval: boolean) => approval && !canSubmitApproval(user);
   return (
     <div className="flex min-h-[calc(100vh-2rem)] flex-col items-center justify-center p-6">
       <div className="w-full max-w-5xl">
@@ -33,18 +35,34 @@ export default async function PengajuanPage() {
           <p className="mx-auto max-w-2xl text-gray-600">Silakan pilih formulir layanan IT yang sesuai dengan kebutuhan Anda. Pastikan untuk mengisi data dengan lengkap dan valid.</p>
         </div>
         <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
-          {FORMS.map(({ href, icon: Icon, name, subtitle, tone, text }) => (
-            <Link key={href} href={href} className="group relative flex h-full flex-col overflow-hidden rounded-2xl border border-gray-100 bg-white p-8 transition duration-300 hover:-translate-y-1 hover:shadow-xl">
-              <div className={`absolute right-0 top-0 h-24 w-24 rounded-bl-full transition-transform group-hover:scale-125 ${TONES[tone].corner}`} />
-              <div className={`relative mb-6 flex h-12 w-12 items-center justify-center rounded-xl shadow-sm ${TONES[tone].icon}`}><Icon className="h-5 w-5" aria-hidden="true" /></div>
-              <h2 className="mb-2 text-xl font-bold text-gray-900">{name}</h2>
-              <h3 className={`mb-4 text-sm font-semibold ${TONES[tone].text}`}>{subtitle}</h3>
-              <p className="mb-8 flex-grow text-sm text-gray-500">{text}</p>
-              <div className={`mt-auto flex items-center text-sm font-semibold ${TONES[tone].text}`}>
-                Isi Formulir <ArrowRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-1" aria-hidden="true" />
-              </div>
-            </Link>
-          ))}
+          {FORMS.map(({ href, icon: Icon, name, subtitle, tone, text, approval }) => {
+            const body = (
+              <>
+                <div className={`absolute right-0 top-0 h-24 w-24 rounded-bl-full transition-transform group-hover:scale-125 ${TONES[tone].corner}`} />
+                <div className={`relative mb-6 flex h-12 w-12 items-center justify-center rounded-xl shadow-sm ${TONES[tone].icon}`}><Icon className="h-5 w-5" aria-hidden="true" /></div>
+                <h2 className="mb-2 text-xl font-bold text-gray-900">{name}</h2>
+                <h3 className={`mb-4 text-sm font-semibold ${TONES[tone].text}`}>{subtitle}</h3>
+                <p className="mb-8 flex-grow text-sm text-gray-500">{text}</p>
+              </>
+            );
+            // Staff only report maintenance; the FPA / FPA-A cards stay visible but cannot be opened.
+            if (locked(approval)) {
+              return (
+                <div key={href} aria-disabled="true" className="relative flex h-full cursor-not-allowed flex-col overflow-hidden rounded-2xl border border-gray-100 bg-white p-8 opacity-60">
+                  {body}
+                  <div className="mt-auto flex items-center text-sm font-semibold text-gray-500"><Lock className="mr-2 h-4 w-4" aria-hidden="true" /> {STAFF_FPA_NOTICE}</div>
+                </div>
+              );
+            }
+            return (
+              <Link key={href} href={href} className="group relative flex h-full flex-col overflow-hidden rounded-2xl border border-gray-100 bg-white p-8 transition duration-300 hover:-translate-y-1 hover:shadow-xl">
+                {body}
+                <div className={`mt-auto flex items-center text-sm font-semibold ${TONES[tone].text}`}>
+                  Isi Formulir <ArrowRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-1" aria-hidden="true" />
+                </div>
+              </Link>
+            );
+          })}
         </div>
         <div className="mt-12 text-center">
           {/* Non-Admins land here, so "/" would only come back; they follow their own documents instead. */}

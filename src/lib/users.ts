@@ -62,12 +62,13 @@ async function saveUserMenus(tx: PoolConnection, userId: number, role: string): 
   for (const key of NON_ADMIN_MENUS) await exec(tx, "INSERT INTO user_menu_access (user_id, menu_key) VALUES (?, ?)", [userId, key]);
 }
 
-// users.role only has Manager / SPV / Koordinator / Admin (shared with the PHP app), so staff
-// without one of those titles are stored as Koordinator; for non-Admins it is only a label.
+// users.role only has Manager / SPV / Koordinator / Staff / Admin, so other titles are stored as
+// Koordinator. Staff may only submit FPM (canSubmitApproval).
 function roleFromJabatan(jabatan: string | null): UserRole {
   const title = jabatan ?? "";
   if (/manager/i.test(title)) return "Manager";
   if (/\bspv\b|supervisor/i.test(title)) return "SPV";
+  if (/\bstaf{1,2}\b/i.test(title)) return "Staff";
   return "Koordinator";
 }
 

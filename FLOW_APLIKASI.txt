@@ -97,7 +97,8 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
     - Email    : karyawan.email, dikosongkan kalau tidak valid atau sudah
                  dipakai user lain.
     - Jabatan  : dari karyawan.jabatan -> mengandung "manager" = Manager,
-                 "spv"/"supervisor" = SPV, selain itu Koordinator.
+                 "spv"/"supervisor" = SPV, "staff"/"staf" = Staff, selain itu
+                 Koordinator.
     - Divisi   : dari karyawan.organisasi kalau cocok dengan daftar divisi,
                  selain itu dikosongkan (FPA / FPA-A meminta Admin
                  mengisinya dulu).
@@ -109,12 +110,14 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
 3. HAK AKSES
 -------------------------------------------------------------------------------
 
-  Jabatan (users.role): Manager, SPV, Koordinator, Admin.
+  Jabatan (users.role): Manager, SPV, Koordinator, Staff, Admin.
     - Admin  : otomatis punya semua menu + menu Users + aksi khusus Admin.
     - Lainnya: menu tetap Buat Pengajuan, Task, dan Approvals
                (NON_ADMIN_MENUS di src/lib/menus.ts). Tidak bisa dicentang
                per user. Tabel user_menu_access tetap diisi menu yang sama
                supaya aplikasi PHP menampilkan menu yang sama.
+    - Staff  : menu sama seperti non-Admin lain, tetapi hanya boleh mengajukan
+               FPM. Lihat bagian 5.
     - Manager IT / Manager FAT yang ditunjuk Admin (tabel approval_roles):
                hanya Approvals dan Task (MANAGER_MENUS). Mereka murni
                approver dan tidak bisa mengajukan FPA / FPA-A.
@@ -176,7 +179,17 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
 5. PENGAJUAN LAYANAN IT (menu Buat Pengajuan, /pengajuan)
 -------------------------------------------------------------------------------
 
-  Syarat: akun punya menu "pengajuan" dan divisinya sudah diatur Admin.
+  Syarat: akun punya menu "pengajuan" dan divisinya sudah diatur Admin
+  (divisi hanya wajib untuk FPA / FPA-A).
+
+  Jabatan Staff hanya boleh mengajukan FPM:
+    - Di portal, kartu FPA dan FPA-A tetap tampil tetapi nonaktif dengan
+      tulisan "Hanya untuk jabatan selain Staff".
+    - /pengajuan/fpa dan /pengajuan/fpa-a yang dibuka langsung menampilkan
+      pesan yang sama, dan server menolak pengajuan baru dari Staff
+      (canSubmitApproval di src/lib/menus.ts).
+    - Revisi FPA / FPA-A yang sudah berjalan (misalnya dibuat sebelum akunnya
+      menjadi Staff) tetap boleh dikirim ulang, dan checklist tetap bisa diuji.
 
   FPA  - Form Pengajuan Aplikasi (aplikasi/fitur baru)
          Nomor otomatis: FPA/ITS/001/MM/YYYY (urut per bulan)
@@ -190,7 +203,8 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
          perubahan, daftar fitur/scope, tambahan waktu, tambahan biaya.
 
   FPM  - Form Permintaan Maintenance (laporan bug/kendala)
-         Tidak melalui approval. Langsung masuk dengan status "Open".
+         Tidak melalui approval. Langsung masuk dengan status "Open", dan
+         semua anggota Tim IT menerima email (lihat bagian 8 dan 11).
 
   Di atas form ditampilkan perkiraan jalur approval pemohon, beserta hal yang
   membuat pengajuan belum bisa dikirim (Manager belum ditunjuk, DB Absensi
@@ -319,6 +333,13 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
                                         (diproses_at dicatat)                  (tanggal_selesai dicatat)
 
   - Admin bisa mengisi estimasi hari (1-999) saat Open / In Progress.
+  - Email (antrean fpm_email_queue, lihat bagian 11):
+      FPM dikirim      -> semua anggota Tim IT (laporan baru)
+      Tandai Diproses  -> pelapor (mulai dikerjakan + estimasi hari)
+      Selesaikan       -> pelapor (laporan selesai)
+    Yang melakukan aksi tidak menerima email atas aksinya sendiri. Email
+    "laporan baru" yang belum terkirim saat FPM sudah diproses ditandai
+    'skipped'.
   - Deadline FPM = tanggal mulai diproses + estimasi hari.
   - Setelah Closed, dihitung berapa hari terlambat dari deadline.
 
@@ -392,6 +413,9 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
      (Disarankan dijalankan tiap menit.)
   5. Sebelum mengirim, email 'turn' dicek ulang. Kalau gilirannya sudah
      lewat, ditandai 'skipped'.
+  6. Email FPM memakai antrean sendiri (fpm_email_queue) karena FPM tidak
+     punya jalur approval. Cara kirim, pengulangan 5 menit, dan cron-nya
+     sama (cron yang sama memproses kedua antrean).
   Isi email berisi link: APP_BASE_URL + /approvals/<type>/<id> (email revisi
   ke pemohon langsung ke form revisi).
 

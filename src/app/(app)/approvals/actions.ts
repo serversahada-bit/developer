@@ -5,7 +5,7 @@ import { requireActionUser, UserError } from "@/lib/auth";
 import { activateLegacyApproval, adjustBudget, adjustEstimatedDuration, decideApproval, setFpmEstimate, transitionFpmStatus } from "@/lib/approval";
 import { toggleChecklistItem } from "@/lib/checklist";
 import { isDocType } from "@/lib/documents";
-import { deliverDocumentApprovalEmail } from "@/lib/email";
+import { deliverDocumentApprovalEmail, deliverFpmEmails } from "@/lib/email";
 import { positiveInt, str, type ActionState } from "@/lib/form";
 
 // Decisions on one document (approve_action.php / checklist_action.php). These do not require a
@@ -89,7 +89,7 @@ export async function fpmTransitionAction(form: FormData): Promise<ActionState> 
   return run(async () => {
     const user = await requireActionUser();
     return transitionFpmStatus(positiveInt(form, "id"), str(form, "action"), user);
-  });
+  }, () => deliverFpmEmails(positiveInt(form, "id")));
 }
 
 export async function checklistAction(form: FormData): Promise<ActionState> {

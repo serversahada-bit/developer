@@ -43,8 +43,16 @@ export const NON_ADMIN_MENUS: MenuKey[] = ["pengajuan", "tasks", "approvals"];
 // Projects, Activity Log and My Tasks share the same daily log / project mutations, as process.php did.
 export const LOG_MENUS: MenuKey[] = ["projects", "activity_log", "my_tasks"];
 
-export const USER_ROLES = ["Manager", "SPV", "Koordinator", "Admin"] as const;
+export const USER_ROLES = ["Manager", "SPV", "Koordinator", "Staff", "Admin"] as const;
 export type UserRole = (typeof USER_ROLES)[number];
+
+// Staff only report maintenance (FPM); new FPA / FPA-A are for every other jabatan. A document
+// already in revision may still be resubmitted.
+export const STAFF_FPA_NOTICE = "Hanya untuk jabatan selain Staff";
+
+export function canSubmitApproval(user: { role: string }): boolean {
+  return user.role !== "Staff";
+}
 
 // FPA / FPA-A approvers chosen by an Admin (table approval_roles), one account each. They only
 // approve, so they never get Buat Pengajuan.

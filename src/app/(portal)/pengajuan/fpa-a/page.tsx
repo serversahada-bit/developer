@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { canUseMenu, requireUser } from "@/lib/auth";
 import { db, rows } from "@/lib/db";
-import { AccessDenied } from "@/components/ui";
+import { canSubmitApproval } from "@/lib/menus";
+import { AccessDenied, StaffFpmOnly } from "@/components/ui";
 import { loadFormContext, revisionIdOf } from "../context";
 import FpaaForm, { type FpaaValues } from "./FpaaForm";
 
@@ -12,6 +13,7 @@ export default async function FpaaPage({ searchParams }: PageProps<"/pengajuan/f
   const user = await requireUser("/pengajuan/fpa-a");
   const revisionId = revisionIdOf(revisionParam);
   if (!revisionId && !canUseMenu(user, "pengajuan")) return <AccessDenied user={user} />;
+  if (!revisionId && !canSubmitApproval(user)) return <StaffFpmOnly />;
 
   const { context, revision, error } = await loadFormContext("fpaa", user, revisionParam);
   if (error) return <p className="mx-auto mt-16 max-w-xl rounded-xl border border-red-200 bg-red-50 p-6 text-red-800">{error}</p>;

@@ -90,7 +90,7 @@ export default function UserForm({ editId, editingLocal, values, karyawanOptions
                 <option value="">Pilih jabatan</option>
                 {USER_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}
               </select>
-              <p className="mt-1 text-xs text-gray-500">User dengan jabatan Admin dapat membuat akun baru.</p>
+              <p className="mt-1 text-xs text-gray-500">User dengan jabatan Admin dapat membuat akun baru. Staff hanya dapat mengajukan FPM.</p>
             </div>
             <div>
               <label htmlFor="division" className="mb-2 block text-sm font-medium text-gray-700">Divisi</label>

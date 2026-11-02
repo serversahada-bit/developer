@@ -3,7 +3,7 @@ import type { PoolConnection } from "mysql2/promise";
 import { db, exec, row, rows, scalar, transaction, type Db, type Row } from "./db";
 import { UserError, type CurrentUser } from "./auth";
 import { approvalTable, costColumns, effectiveCost, rupiah, STAGE_LABEL, STAGES, type DocType, type Stage } from "./documents";
-import { queueInfoEmails, queueTurnEmails } from "./email";
+import { queueFpmEmails, queueInfoEmails, queueTurnEmails, type FpmEmailEvent } from "./email";
 import { createChecklistItems } from "./checklist";
 import { todayWib } from "./dates";
 import { parseRupiah } from "./form";
@@ -425,16 +425,19 @@ export async function adjustEstimatedDuration(type: DocType, id: number, newValu
 
 export async function transitionFpmStatus(id: number, action: string, user: CurrentUser): Promise<string> {
   if (user.role !== "Admin") throw new UserError("Hanya Admin/Developer yang dapat mengubah status laporan FPM.");
-  const transitions: Record<string, [string, string, string]> = {
+  const transitions: Record<string, [string, string, string, FpmEmailEvent]> = {
     // The estimate's deadline counts from the moment work starts; the close date is kept for the history list.
-    process: ["Open", "In Progress", ", diproses_at = NOW()"],
-    close: ["In Progress", "Closed", ", tanggal_selesai = CURDATE()"],
+    process: ["Open", "In Progress", ", diproses_at = NOW()", "processing"],
+    close: ["In Progress", "Closed", ", tanggal_selesai = CURDATE()", "closed"],
   };
   const transition = transitions[action];
   if (!transition) throw new UserError("Tindakan FPM tidak valid.");
-  const [before, after, stamp] = transition;
-  const result = await exec(db, `UPDATE fpm_submissions SET status_dokumen = ?${stamp} WHERE id = ? AND status_dokumen = ?`, [after, id, before]);
-  if (!result.affectedRows) throw new UserError("Status FPM sudah berubah. Muat ulang halaman.");
+  const [before, after, stamp, event] = transition;
+  await transaction(async (tx) => {
+    const result = await exec(tx, `UPDATE fpm_submissions SET status_dokumen = ?${stamp} WHERE id = ? AND status_dokumen = ?`, [after, id, before]);
+    if (!result.affectedRows) throw new UserError("Status FPM sudah berubah. Muat ulang halaman.");
+    await queueFpmEmails(tx, id, event, user.id);
+  });
   return `Status FPM diperbarui menjadi ${after}.`;
 }
 

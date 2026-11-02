@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireActionUser, UserError } from "@/lib/auth";
 import { detailUrl, isDocType } from "@/lib/documents";
-import { deliverDocumentApprovalEmail } from "@/lib/email";
+import { deliverDocumentApprovalEmail, deliverFpmEmails } from "@/lib/email";
 import { str, type ActionState } from "@/lib/form";
 import { saveApprovalSubmission, saveFpm } from "@/lib/submission";
 
@@ -27,14 +27,16 @@ export async function submitApprovalAction(type: string, revisionId: number, for
 }
 
 export async function submitFpmAction(form: FormData): Promise<ActionState> {
+  let savedId: number;
   try {
     const user = await requireActionUser("pengajuan");
-    await saveFpm(form, user);
+    savedId = await saveFpm(form, user);
   } catch (error) {
     if (error instanceof UserError) return { error: error.message };
     console.error("FPM submission failed:", error);
     return { error: "Gagal menyimpan laporan. Silakan coba kembali." };
   }
+  await deliverFpmEmails(savedId);
   revalidatePath("/", "layout");
   return { success: "Permintaan maintenance berhasil dilaporkan! Tim IT akan segera menindaklanjuti." };
 }

@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle2, Lock } from "lucide-react";
 import { daysLeftUntil, daysUntil, formatDate, parseWib, wibDateTime } from "@/lib/dates";
 import { fpmLateDays } from "@/lib/deadlines";
 import { userHomeMenu, type CurrentUser } from "@/lib/auth";
+import { STAFF_FPA_NOTICE } from "@/lib/menus";
 
 // Presentational pieces shared by several pages (server components).
 
@@ -122,6 +123,21 @@ export function ConfidentialBadge() {
 }
 
 // Shown in place of a page whose menu the account was not granted.
+// A new FPA / FPA-A opened by a Staff account, which may only report maintenance.
+export function StaffFpmOnly() {
+  return (
+    <main className="flex flex-1 items-center justify-center p-6">
+      <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-8 text-center shadow-sm">
+        <h1 className="text-xl font-bold text-gray-900">{STAFF_FPA_NOTICE}</h1>
+        <p className="mt-3 text-sm text-gray-600">Jabatan Staff hanya dapat mengajukan FPM (Permintaan Maintenance). Hubungi Admin jika jabatan Anda belum sesuai.</p>
+        <Link href="/pengajuan/fpm" className="mt-6 inline-block rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white">
+          Buka Form FPM
+        </Link>
+      </div>
+    </main>
+  );
+}
+
 export function AccessDenied({ user }: { user: CurrentUser }) {
   const home = userHomeMenu(user);
   return (
