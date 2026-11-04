@@ -2,8 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { requireActionUser, UserError } from "@/lib/auth";
-import { activateLegacyApproval, adjustBudget, adjustEstimatedDuration, decideApproval, setFpmEstimate, transitionFpmStatus } from "@/lib/approval";
+import { activateLegacyApproval, adjustBudget, adjustEstimatedDuration, adjustFinishDate, decideApproval, setFpmEstimate, transitionFpmStatus } from "@/lib/approval";
 import { toggleChecklistItem } from "@/lib/checklist";
+import { isDateString } from "@/lib/dates";
 import { isDocType } from "@/lib/documents";
 import { deliverDocumentApprovalEmail, deliverFpmEmails } from "@/lib/email";
 import { positiveInt, str, type ActionState } from "@/lib/form";
@@ -73,6 +74,20 @@ export async function adjustDurationAction(form: FormData): Promise<ActionState>
     const raw = str(form, "duration_value").trim();
     if (raw !== "" && !/^\d{1,8}$/.test(raw)) throw new UserError("Estimasi hari harus berupa angka positif atau dikosongkan.");
     return adjustEstimatedDuration(type, id, raw === "" ? null : Number(raw), user);
+  });
+}
+
+export async function finishDateAction(form: FormData): Promise<ActionState> {
+  let id = 0;
+  return run(async () => {
+    const user = await requireActionUser();
+    id = positiveInt(form, "id");
+    if (!id) throw new UserError("Parameter tidak valid.");
+    const raw = str(form, "finish_date").trim();
+    if (raw !== "" && !isDateString(raw)) throw new UserError("Estimasi tanggal selesai tidak valid.");
+    return adjustFinishDate(id, raw === "" ? null : raw, user);
+  }, async () => {
+    if (id) await deliverDocumentApprovalEmail("fpa", id);
   });
 }
 

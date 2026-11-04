@@ -174,6 +174,13 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
     - Jalur per pemohon yang lama (approval_routes) tidak dipakai lagi.
     - Akun yang sedang menjadi Manager IT / FAT tidak bisa dihapus.
 
+  Hari Kerja
+    - Admin mencentang hari kerja (tabel app_settings, key hari_kerja).
+      Belum pernah disimpan = Senin-Sabtu. Libur nasional / cuti bersama
+      belum dihitung.
+    - Dipakai untuk minimal Estimasi Tanggal Selesai FPA dan tambahan waktu
+      FPA-A pada deadline FPA.
+
 
 -------------------------------------------------------------------------------
 5. PENGAJUAN LAYANAN IT (menu Buat Pengajuan, /pengajuan)
@@ -194,13 +201,21 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
   FPA  - Form Pengajuan Aplikasi (aplikasi/fitur baru)
          Nomor otomatis: FPA/ITS/001/MM/YYYY (urut per bulan)
          Isi: nama head, nama aplikasi, masalah, daftar fitur/solusi (nama +
-         keterangan per item), urgensi, biaya, skala, estimasi durasi, dsb.
-         Bisa ditandai "rahasia".
+         keterangan per item), urgensi, biaya, skala, estimasi tanggal
+         selesai, dsb. Bisa ditandai "rahasia".
+         Skala Aplikasi wajib. Estimasi Tanggal Selesai wajib, minimal
+         sekian hari kerja sejak dokumen DIKIRIM (bukan Tanggal Pengajuan):
+           Kecil / Nemo Tetra 14 | Menengah / Salmon 28 | Besar / Whale 90
+         Tidak ada batas maksimal. Hari ke-1 = hari kerja pertama setelah
+         tanggal kirim. Revisi yang dikirim ulang dihitung ulang dari tanggal
+         kirim ulang. Dicek di form dan di server (src/lib/workdays.ts).
+         FPA lama (sebelum fitur ini) tetap memakai estimasi_durasi (hari).
 
   FPA-A - Form Pengajuan Addendum (perubahan atas FPA yang sudah ada)
          Nomor otomatis: FPA-A/ITS/001/MM/YYYY
          Merujuk nomor FPA utama (dipilih atau diketik manual). Isi: jenis
-         perubahan, daftar fitur/scope, tambahan waktu, tambahan biaya.
+         perubahan, daftar fitur/scope, tambahan waktu (hari kerja), tambahan
+         biaya.
 
   FPM  - Form Permintaan Maintenance (laporan bug/kendala)
          Tidak melalui approval. Langsung masuk dengan status "Open", dan
@@ -297,8 +312,17 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
       memakai alur baru.
 
   Aksi tambahan Admin di halaman detail:
-    - Koreksi estimasi hari selama dokumen masih menunggu approval. Nilai
-      asli pemohon tetap disimpan; koreksi masuk ke kolom *_admin.
+    - Koreksi estimasi selama dokumen masih menunggu approval (tahap mana
+      pun). Nilai asli pemohon tetap disimpan; koreksi masuk ke kolom *_admin.
+        FPA   : tanggal selesai (estimasi_selesai_admin). Bebas dari minimal
+                skala, tapi tidak boleh sebelum tanggal dokumen dikirim.
+                Selain Admin (termasuk Tim IT), Manager IT juga boleh
+                mengoreksi, tapi hanya saat gilirannya. Tanpa alasan; setiap
+                koreksi dikirim lewat email ke pemohon dan yang sudah
+                memutuskan (seperti budget).
+        FPA-A : tambahan waktu dalam hari (tambahan_waktu_admin).
+      Saat pemohon mengirim ulang revisi FPA, form sudah berisi tanggal
+      koreksi terakhir dan koreksi Admin dikosongkan (seperti budget).
     - Aktifkan jalur approval untuk dokumen lama (dari versi PHP) yang belum
       punya approval_runs. Jalurnya memakai alur di atas.
 
@@ -351,8 +375,11 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
   Daftar semua pengajuan yang masih berjalan, bisa dilihat semua akun yang
   punya menu "tasks":
     - FPA / FPA-A berstatus Diajukan, Diverifikasi, Disetujui, atau Revisi.
-    - Deadline FPA   = tanggal_pengajuan + estimasi durasi (koreksi Admin
-                       kalau ada) + tambahan waktu dari FPA-A yang disetujui.
+    - Deadline FPA   = estimasi tanggal selesai (koreksi Admin kalau ada)
+                       + tambahan waktu FPA-A yang disetujui, dihitung
+                       sebagai hari kerja.
+                       FPA lama tanpa tanggal selesai: tanggal_pengajuan +
+                       estimasi durasi + tambahan waktu FPA-A (hari kalender).
     - Deadline FPA-A = tanggal dibuat + tambahan waktu.
     - FPA-A ditampilkan di bawah kartu FPA induknya.
     - Urut berdasarkan deadline terdekat.

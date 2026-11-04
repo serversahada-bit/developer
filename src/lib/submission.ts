@@ -5,9 +5,11 @@ import { approvalTable, costColumns, effectiveCost, type DocType } from "./docum
 import { approvalRun, approvalSteps, resolveAtasan, restartApproval, startApproval, type ApprovalRun } from "./approval";
 import { ScopeError, decodeScopeItems, encodeScopeItems, parseScopeItems, scopeItemsForRevision, type ScopeItem } from "./scope";
 import { indexedRows, parseRupiah, str, strs } from "./form";
-import { isDateString, wibDateTime } from "./dates";
+import { formatDate, isDateString, todayWib, wibDateTime } from "./dates";
 import { queueFpmEmails } from "./email";
 import { canSubmitApproval } from "./menus";
+import { workingDays } from "./settings";
+import { minimumFinishDate, SCALE_MIN_WORKDAYS } from "./workdays";
 
 function text(form: FormData, key: string, max = 10000, required = false): string {
   const value = str(form, key).trim();
@@ -43,7 +45,7 @@ function scopeItems(form: FormData, field: string, label: string, format: "fpa_s
   }
 }
 
-function submissionValues(type: DocType, form: FormData, user: CurrentUser): Record<string, string | number | null> {
+function submissionValues(type: DocType, form: FormData, user: CurrentUser, workdays: number[]): Record<string, string | number | null> {
   if (!user.division) throw new UserError("Divisi akun Anda belum diatur. Hubungi Admin untuk mengaturnya melalui menu Users.");
   const data: Record<string, string | number | null> = { departemen: user.division };
   if (type === "fpa") {
@@ -60,14 +62,19 @@ function submissionValues(type: DocType, form: FormData, user: CurrentUser): Rec
       skala_aplikasi: ["Kecil/Nemo Tetra", "Menengah/Salmon", "Besar/Whale"],
     };
     for (const [key, allowed] of Object.entries(options)) {
-      const value = text(form, key, 50, key === "urgensi");
+      const value = text(form, key, 50, key === "urgensi" || key === "skala_aplikasi");
       if (value !== "" && !allowed.includes(value)) throw new UserError(`Pilihan ${key} tidak valid.`);
       data[key] = value === "" ? null : value;
     }
     data.dampak_bisnis = text(form, "dampak_bisnis");
     data.rahasia = str(form, "rahasia") ? 1 : 0;
     data.metode_eksekusi = choices(form, "metode_eksekusi", ["In-House", "Outsource", "Lisensi"]);
-    data.estimasi_durasi = number(form, "estimasi_durasi");
+    // Counted from the day it is sent (or resent after a revision), not from tanggal_pengajuan.
+    const finish = text(form, "estimasi_selesai", 10);
+    if (!isDateString(finish)) throw new UserError("Estimasi tanggal selesai wajib diisi dengan tanggal yang valid.");
+    const minimum = minimumFinishDate(todayWib(), String(data.skala_aplikasi), workdays)!;
+    if (finish < minimum) throw new UserError(`Estimasi tanggal selesai untuk skala ${data.skala_aplikasi} minimal ${formatDate(minimum, "j F Y")} (${SCALE_MIN_WORKDAYS[String(data.skala_aplikasi)]} hari kerja dari hari ini).`);
+    data.estimasi_selesai = finish;
     data.estimasi_biaya = number(form, "estimasi_biaya", true);
     for (const key of ["server", "lisensi", "integrasi", "hardware"]) data[`catatan_teknis_${key}`] = text(form, `catatan_${key}`);
   } else {
@@ -87,7 +94,7 @@ function submissionValues(type: DocType, form: FormData, user: CurrentUser): Rec
 export async function saveApprovalSubmission(type: DocType, form: FormData, user: CurrentUser, revisionId = 0, expectedCycle = 0): Promise<number> {
   if (!revisionId && !canSubmitApproval(user)) throw new UserError("Jabatan Staff hanya dapat mengajukan FPM. FPA / FPA-A hanya untuk jabatan selain Staff.");
   const table = approvalTable(type);
-  const data = submissionValues(type, form, user);
+  const data = submissionValues(type, form, user, await workingDays());
   // Read from Absensi outside the transaction; a revision re-reads it, as the supervisor may have changed.
   const atasan = await resolveAtasan(user.id);
   return transaction(async (tx) => {
@@ -98,9 +105,11 @@ export async function saveApprovalSubmission(type: DocType, form: FormData, user
         throw new UserError("Dokumen ini tidak dapat Anda revisi.");
       }
       if (expectedCycle !== run.cycle) throw new UserError("Versi revisi sudah berubah. Muat ulang halaman.");
-      // The form was prefilled with the last budget correction, so what the requester sends now replaces it.
+      // The form was prefilled with the last budget (and FPA finish date) correction, so what the
+      // requester sends now replaces it.
       const assignments = Object.keys(data).map((key) => `${key} = ?`).join(", ");
-      await exec(tx, `UPDATE ${table} SET ${assignments}, ${costColumns(type).corrected} = NULL, status_dokumen = 'Diajukan' WHERE id = ?`, [...Object.values(data), revisionId]);
+      const cleared = [costColumns(type).corrected, ...(type === "fpa" ? ["estimasi_selesai_admin"] : [])].map((column) => `${column} = NULL`).join(", ");
+      await exec(tx, `UPDATE ${table} SET ${assignments}, ${cleared}, status_dokumen = 'Diajukan' WHERE id = ?`, [...Object.values(data), revisionId]);
       await restartApproval(tx, type, revisionId, run, user, atasan);
       return revisionId;
     }
@@ -146,6 +155,8 @@ export async function revisionFormData(type: DocType, id: number, user: CurrentU
     document[original] = effectiveCost(type, document);
     if (type === "fpa") document.status_biaya = Number(document[original]) > 0 ? "Berbayar" : "Tanpa Biaya";
   }
+  // Likewise the finish date as last corrected by Admin.
+  if (type === "fpa" && document.estimasi_selesai_admin) document.estimasi_selesai = document.estimasi_selesai_admin;
   for (const key of ["estimasi_biaya", "tambahan_biaya"]) {
     if (document[key] !== null && document[key] !== undefined) {
       document[key] = Number(document[key]).toLocaleString("id-ID", { minimumFractionDigits: 2, maximumFractionDigits: 2 });

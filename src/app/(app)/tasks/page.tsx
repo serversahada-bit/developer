@@ -6,8 +6,9 @@ import { approvalList } from "@/lib/approval";
 import { checklistItems, checklistProgress, type ChecklistItem } from "@/lib/checklist";
 import { db, rows, type Row } from "@/lib/db";
 import { daysUntil, formatDate } from "@/lib/dates";
-import { computeTaskDeadline, fpmDeadline } from "@/lib/deadlines";
+import { computeTaskDeadline, fpaDeadline, fpmDeadline } from "@/lib/deadlines";
 import { detailUrl, type DocType } from "@/lib/documents";
+import { workingDays } from "@/lib/settings";
 import { ChecklistPanel } from "@/components/ChecklistPanel";
 import { AccessDenied, ConfidentialBadge, DeadlineBadge, EmptyState, FpmCompletionBadge, PageHeader, UrgencyBadge } from "@/components/ui";
 import Tabs from "@/components/Tabs";
@@ -80,17 +81,16 @@ async function loadTasks(user: CurrentUser): Promise<Task[]> {
     return { ...task, daysRemaining: task.deadline ? daysUntil(task.deadline) : null, checklist, checklistDone: done, checklistTotal: total };
   };
 
+  const workdays = await workingDays();
   const tasks: Task[] = [];
   const fpaIndex = new Map<string, Task>();
   for (const doc of await approvalList("fpa", user, "board")) {
     if (!ACTIVE_STATUSES.includes(doc.status_dokumen)) continue;
     const extra = extensionDays.get(doc.nomor_fpa) ?? 0;
-    const duration = doc.estimasi_durasi_admin ?? doc.estimasi_durasi;
-    const total = duration !== null && duration !== "" ? Number(duration) + extra : duration;
     const task = await decorate({
       type: "fpa", typeLabel: "FPA", number: doc.nomor_fpa, title: doc.nama_aplikasi, requester: doc.nama_pemohon, department: doc.departemen,
       status: doc.status_dokumen, approvalLabel: doc.approval_label, parentNumber: null, extensionDays: extra,
-      extensionSources: extensionSources.get(doc.nomor_fpa) ?? [], deadline: computeTaskDeadline(doc.tanggal_pengajuan, total),
+      extensionSources: extensionSources.get(doc.nomor_fpa) ?? [], deadline: fpaDeadline(doc as Parameters<typeof fpaDeadline>[0], extra, workdays),
       createdAt: doc.created_at, detailUrl: detailUrl("fpa", Number(doc.id), "tasks"),
       restricted: Boolean(doc.rahasia) && !canSeeConfidential(doc, "fpa"), document: doc, children: [],
     });

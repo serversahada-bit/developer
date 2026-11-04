@@ -1,4 +1,5 @@
 import { addDays, daysBetween } from "./dates";
+import { addWorkingDays } from "./workdays";
 
 // Deadline of an FPA/FPA-A: base date plus duration days, or null when either is missing.
 export function computeTaskDeadline(baseDate: string | null, duration: unknown): string | null {
@@ -6,6 +7,23 @@ export function computeTaskDeadline(baseDate: string | null, duration: unknown):
   const days = Number(duration);
   if (!Number.isFinite(days) || days < 0) return null;
   return addDays(baseDate, Math.trunc(days));
+}
+
+interface FpaTiming {
+  tanggal_pengajuan: string | null;
+  estimasi_durasi: number | string | null;
+  estimasi_durasi_admin: number | string | null;
+  estimasi_selesai: string | null;
+  estimasi_selesai_admin: string | null;
+}
+
+// The estimated finish date (Admin's correction first) plus approved FPA-A days as working days.
+// FPAs from before the finish date existed keep counting calendar days from tanggal_pengajuan.
+export function fpaDeadline(fpa: FpaTiming, extraDays: number, workdays: number[]): string | null {
+  const finish = fpa.estimasi_selesai_admin ?? fpa.estimasi_selesai;
+  if (finish) return addWorkingDays(finish, extraDays, workdays);
+  const duration = fpa.estimasi_durasi_admin ?? fpa.estimasi_durasi;
+  return computeTaskDeadline(fpa.tanggal_pengajuan, duration !== null && duration !== "" ? Number(duration) + extraDays : duration);
 }
 
 interface FpmTiming {

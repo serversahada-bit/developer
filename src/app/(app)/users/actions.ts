@@ -4,8 +4,9 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getCurrentUser, UserError } from "@/lib/auth";
 import { saveManagerRoles } from "@/lib/approval";
-import { positiveInt, str, type ActionState } from "@/lib/form";
+import { positiveInt, str, strs, type ActionState } from "@/lib/form";
 import { loadKaryawan, type Karyawan } from "@/lib/identity";
+import { saveWorkingDays } from "@/lib/settings";
 import { createUser, deleteUser, updateUser } from "@/lib/users";
 
 async function requireAdmin() {
@@ -65,6 +66,19 @@ export async function deleteUserAction(form: FormData): Promise<ActionState> {
   }
   revalidatePath("/users");
   redirect("/users?saved=deleted");
+}
+
+export async function saveWorkingDaysAction(form: FormData): Promise<ActionState> {
+  try {
+    const admin = await requireAdmin();
+    const days = strs(form, "hari_kerja[]");
+    if (!days.every((day) => /^[0-6]$/.test(day))) throw new UserError("Pilihan hari kerja tidak valid.");
+    await saveWorkingDays(days.map(Number), admin);
+  } catch (error) {
+    return fail(error);
+  }
+  revalidatePath("/", "layout");
+  redirect("/users?saved=workdays#hari-kerja");
 }
 
 export async function saveManagerRolesAction(form: FormData): Promise<ActionState> {

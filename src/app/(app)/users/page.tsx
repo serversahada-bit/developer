@@ -7,10 +7,12 @@ import { db } from "@/lib/db";
 import { formatDate } from "@/lib/dates";
 import { karyawanInactive, loadKaryawan, type Karyawan } from "@/lib/identity";
 import { MANAGER_MENUS, MANAGER_ROLE_LABEL, MANAGER_ROLES, NON_ADMIN_MENUS, menuByKey } from "@/lib/menus";
+import { workingDays } from "@/lib/settings";
 import { listUsers } from "@/lib/users";
+import { WEEKDAY_LABELS } from "@/lib/workdays";
 import ActionForm, { SubmitButton } from "@/components/ActionForm";
 import { Notice } from "@/components/ui";
-import { deleteUserAction, saveManagerRolesAction } from "./actions";
+import { deleteUserAction, saveManagerRolesAction, saveWorkingDaysAction } from "./actions";
 import UserForm, { type KaryawanOption, type UserFormValues } from "./UserForm";
 
 export const metadata: Metadata = { title: "Users" };
@@ -20,6 +22,7 @@ const SAVED: Record<string, string> = {
   updated: "Perubahan user berhasil disimpan.",
   deleted: "User berhasil dihapus.",
   roles: "Manager IT dan Manager FAT disimpan. Dokumen yang sedang menunggu peran tersebut dialihkan ke akun baru.",
+  workdays: "Hari kerja disimpan.",
 };
 
 const idParam = (value: unknown) => (typeof value === "string" && /^[1-9][0-9]{0,9}$/.test(value) ? Number(value) : 0);
@@ -53,6 +56,7 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
   const holders = await managerHolders(db);
   const timIt = await timItMembers(db);
   const managerIds = new Set(Object.values(holders).map((holder) => holder.id));
+  const workdays = await workingDays();
 
   const editing = editId ? users.find((u) => u.id === editId) : undefined;
   const deleting = deleteId ? users.find((u) => u.id === deleteId) : undefined;
@@ -123,6 +127,22 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
             <span className="font-medium text-gray-800">Tim IT</span> (akun berjabatan Admin di divisi IT, cukup satu yang menyetujui):{" "}
             {timIt.length ? timIt.map((member) => member.full_name).join(", ") : <span className="font-semibold text-red-700">belum ada. Atur jabatan Admin dan divisi IT pada akun anggota Tim IT.</span>}
           </div>
+        </section>
+
+        <section id="hari-kerja" className="rounded-xl border border-gray-200 bg-white p-5 md:p-6">
+          <h2 className="text-lg font-bold text-gray-900">Hari Kerja</h2>
+          <p className="mb-5 mt-1 text-sm text-gray-500">
+            Dipakai untuk minimal Estimasi Tanggal Selesai FPA (Nemo 14, Salmon 28, Whale 90 hari kerja sejak dokumen dikirim) dan tambahan waktu FPA-A.
+            Libur nasional dan cuti bersama belum dihitung.
+          </p>
+          <ActionForm action={saveWorkingDaysAction} className="flex flex-wrap items-center gap-x-5 gap-y-3">
+            {[1, 2, 3, 4, 5, 6, 0].map((day) => (
+              <label key={day} className="flex cursor-pointer items-center gap-2 text-sm">
+                <input type="checkbox" name="hari_kerja[]" value={day} defaultChecked={workdays.includes(day)} className="rounded text-indigo-600" /> {WEEKDAY_LABELS[day]}
+              </label>
+            ))}
+            <SubmitButton className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60">Simpan</SubmitButton>
+          </ActionForm>
         </section>
 
         <UserForm editId={editing?.id ?? 0} editingLocal={Boolean(editing && editing.karyawan_id === null)} values={values} karyawanOptions={karyawanOptions} menus={nonAdminMenus} />

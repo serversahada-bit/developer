@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { canUseMenu, requireUser } from "@/lib/auth";
 import { todayWib } from "@/lib/dates";
 import { canSubmitApproval } from "@/lib/menus";
+import { workingDays } from "@/lib/settings";
 import { AccessDenied, StaffFpmOnly } from "@/components/ui";
 import { loadFormContext, revisionIdOf } from "../context";
 import FpaForm, { type FpaValues } from "./FpaForm";
@@ -33,12 +34,12 @@ export default async function FpaPage({ searchParams }: PageProps<"/pengajuan/fp
     metode_eksekusi: doc?.metode_eksekusi ? String(doc.metode_eksekusi).split(", ") : [],
     status_biaya: doc?.status_biaya ?? "",
     skala_aplikasi: doc?.skala_aplikasi ?? "",
-    estimasi_durasi: doc?.estimasi_durasi != null ? String(doc.estimasi_durasi) : "",
+    estimasi_selesai: doc?.estimasi_selesai ?? "",
     estimasi_biaya: doc?.estimasi_biaya ?? "",
     catatan_server: doc?.catatan_teknis_server ?? "",
     catatan_lisensi: doc?.catatan_teknis_lisensi ?? "",
     catatan_integrasi: doc?.catatan_teknis_integrasi ?? "",
     catatan_hardware: doc?.catatan_teknis_hardware ?? "",
   };
-  return <FpaForm context={context} values={values} revisionId={revisionId} />;
+  return <FpaForm context={context} values={values} revisionId={revisionId} today={todayWib()} workdays={await workingDays()} />;
 }

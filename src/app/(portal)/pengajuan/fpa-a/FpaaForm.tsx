@@ -89,7 +89,7 @@ export default function FpaaForm({ context, values, revisionId, fpaOptions }: { 
                   namePlaceholder="Contoh: Ekspor laporan ke Excel" detailPlaceholder="Jelaskan cara kerja fitur atau rumus perhitungannya. Contoh: Laporan bulanan bisa diunduh dalam format .xlsx" />
                 <div className="grid grid-cols-2 gap-5">
                   <div>
-                    <label htmlFor="tambahan_waktu" className="form-label">Tambahan Waktu (Hari Kerja/Kalender)</label>
+                    <label htmlFor="tambahan_waktu" className="form-label">Tambahan Waktu (Hari Kerja)</label>
                     <input type="number" id="tambahan_waktu" name="tambahan_waktu" defaultValue={values.tambahan_waktu} min={0} placeholder="0" className="form-input" />
                   </div>
                   <div>

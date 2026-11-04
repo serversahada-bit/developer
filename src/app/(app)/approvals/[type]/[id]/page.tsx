@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AlertTriangle, ArrowLeft, BarChart3, Bug, CalendarDays, Clock, Coins, Hourglass, Info, Laptop, Lightbulb, Repeat, Server, Settings, ShieldCheck, Wrench } from "lucide-react";
 import { canUseMenu, requireUser, type CurrentUser } from "@/lib/auth";
-import { approvalRun, approvalSteps, canViewApproval } from "@/lib/approval";
+import { approvalRun, approvalSteps, canAdjustFinishDate, canViewApproval, lastSentDate } from "@/lib/approval";
 import { checklistItems } from "@/lib/checklist";
 import { db, row, rows, type Row } from "@/lib/db";
 import { formatDate } from "@/lib/dates";
@@ -14,7 +14,7 @@ import { ChecklistPanel, ScopeItemList } from "@/components/ChecklistPanel";
 import { DeadlineBadge, FpmCompletionBadge, Notice, StatusBadge } from "@/components/ui";
 import ActionForm, { SubmitButton } from "@/components/ActionForm";
 import ApprovalPanel from "./ApprovalPanel";
-import { adjustDurationAction, fpmEstimateAction, fpmTransitionAction } from "../../actions";
+import { adjustDurationAction, finishDateAction, fpmEstimateAction, fpmTransitionAction } from "../../actions";
 
 export const metadata: Metadata = { title: "Detail Pengajuan" };
 
@@ -51,7 +51,7 @@ function Creator({ data }: { data: Row }) {
   return <div className="mt-1 text-xs text-gray-500">{data.creator_role} &middot; @{data.creator_username}</div>;
 }
 
-function DurationForm({ type, id, value, label, tone }: { type: "fpa" | "fpaa" | "fpm"; id: number; value: number | null; label: string; tone: "indigo" | "purple" }) {
+function DurationForm({ type, id, value, label, tone }: { type: "fpaa" | "fpm"; id: number; value: number | null; label: string; tone: "indigo" | "purple" }) {
   const isFpm = type === "fpm";
   return (
     <ActionForm action={isFpm ? fpmEstimateAction : adjustDurationAction} messagePosition="bottom" className="mt-2 border-t border-gray-100 pt-4">
@@ -64,6 +64,23 @@ function DurationForm({ type, id, value, label, tone }: { type: "fpa" | "fpaa" |
             placeholder={isFpm ? "Contoh: 3 — kosongkan untuk menghapus" : "Kosongkan untuk pakai estimasi pemohon"} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" />
         </div>
         <SubmitButton className={`rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-60 ${tone === "purple" ? "bg-purple-600 hover:bg-purple-700" : "bg-indigo-600 hover:bg-indigo-700"}`}>Simpan</SubmitButton>
+      </div>
+    </ActionForm>
+  );
+}
+
+// Admin's or Manager IT's correction of an FPA's finish date: any day from when the document was sent.
+function FinishDateForm({ id, value, min }: { id: number; value: string | null; min: string }) {
+  return (
+    <ActionForm action={finishDateAction} messagePosition="bottom" className="mt-2 border-t border-gray-100 pt-4">
+      <input type="hidden" name="id" value={id} />
+      <div className="flex items-end gap-3">
+        <div className="flex-1">
+          <label htmlFor="finish-date" className="mb-1 block text-xs font-medium text-gray-500">Koreksi estimasi tanggal selesai</label>
+          <input type="date" id="finish-date" name="finish_date" min={min} defaultValue={value ?? ""} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+          <p className="mt-1 text-xs text-gray-400">Minimal {formatDate(min, "d F Y")} (tanggal dikirim). Kosongkan untuk pakai tanggal pemohon.</p>
+        </div>
+        <SubmitButton className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60">Simpan</SubmitButton>
       </div>
     </ActionForm>
   );
@@ -107,6 +124,9 @@ export default async function ApprovalDetailPage({ params, searchParams }: PageP
   const checklist = type !== "fpm" && data.status_dokumen === "Disetujui" ? await checklistItems(type, id) : [];
   const canAdjustDuration = type !== "fpm" && user.role === "Admin" && run?.state === "pending";
   const canManageFpm = type === "fpm" && user.role === "Admin" && ["Open", "In Progress"].includes(data.status_dokumen);
+  const canAdjustFinish = type === "fpa" && canAdjustFinishDate(run, steps, user);
+  const sentDate = canAdjustFinish && run ? await lastSentDate(db, run) : null;
+  const finishCorrectedBy = events.findLast((event) => event.action === "adjust_finish_date")?.actor_name ?? null;
   const origin = detailOrigin(query.from);
   const notice = typeof query.notice === "string" ? NOTICES[query.notice] : undefined;
 
@@ -177,13 +197,27 @@ export default async function ApprovalDetailPage({ params, searchParams }: PageP
                   <Field label="Skala Aplikasi">{data.skala_aplikasi}</Field>
                   <Field label="Metode Eksekusi">{data.metode_eksekusi}</Field>
                   <div className="mt-2 flex items-center justify-between border-t border-gray-100 pt-4">
-                    <div>
-                      <div className="info-label">Estimasi Durasi</div>
-                      <div className="info-value text-xl font-bold">{data.estimasi_durasi || "-"} <span className="text-sm font-normal text-gray-500">Hari</span></div>
-                      {data.estimasi_durasi_admin !== null && (
-                        <div className="mt-1 flex items-center gap-1 text-sm font-semibold text-indigo-700"><ShieldCheck className="h-3 w-3" aria-hidden="true" />Koreksi Admin: {data.estimasi_durasi_admin} Hari</div>
-                      )}
-                    </div>
+                    {/* FPAs sent before the finish date existed still show their duration in days. */}
+                    {!data.estimasi_selesai && data.estimasi_durasi !== null ? (
+                      <div>
+                        <div className="info-label">Estimasi Durasi</div>
+                        <div className="info-value text-xl font-bold">{data.estimasi_durasi} <span className="text-sm font-normal text-gray-500">Hari</span></div>
+                        {data.estimasi_durasi_admin !== null && (
+                          <div className="mt-1 flex items-center gap-1 text-sm font-semibold text-indigo-700"><ShieldCheck className="h-3 w-3" aria-hidden="true" />Koreksi Admin: {data.estimasi_durasi_admin} Hari</div>
+                        )}
+                        {data.estimasi_selesai_admin && (
+                          <div className="mt-1 flex items-center gap-1 text-sm font-semibold text-indigo-700"><ShieldCheck className="h-3 w-3" aria-hidden="true" />Koreksi: selesai {formatDate(data.estimasi_selesai_admin, "d F Y")}{finishCorrectedBy && ` (oleh ${finishCorrectedBy})`}</div>
+                        )}
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="info-label">Estimasi Tanggal Selesai</div>
+                        <div className="info-value text-xl font-bold">{data.estimasi_selesai ? formatDate(data.estimasi_selesai, "d F Y") : "-"}</div>
+                        {data.estimasi_selesai_admin && (
+                          <div className="mt-1 flex items-center gap-1 text-sm font-semibold text-indigo-700"><ShieldCheck className="h-3 w-3" aria-hidden="true" />Koreksi: {formatDate(data.estimasi_selesai_admin, "d F Y")}{finishCorrectedBy && ` (oleh ${finishCorrectedBy})`}</div>
+                        )}
+                      </div>
+                    )}
                     <div className="text-right">
                       <div className="info-label">Estimasi Biaya</div>
                       <div className="info-value text-xl font-bold text-green-600">{Number(data.estimasi_biaya) ? rupiah(data.estimasi_biaya) : "Gratis / Internal"}</div>
@@ -193,7 +227,7 @@ export default async function ApprovalDetailPage({ params, searchParams }: PageP
                       )}
                     </div>
                   </div>
-                  {canAdjustDuration && <DurationForm type="fpa" id={id} value={data.estimasi_durasi_admin} label="Koreksi estimasi hari (Admin)" tone="indigo" />}
+                  {sentDate && <FinishDateForm id={id} value={data.estimasi_selesai_admin} min={sentDate} />}
                 </div>
               </Card>
               <Card tone="indigo" icon={Server} title="Catatan Teknis IT">

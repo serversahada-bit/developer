@@ -23,6 +23,7 @@ const ACTION_LABELS: Record<string, string> = {
   reject: "Menolak",
   revision: "Mengembalikan untuk revisi",
   adjust_duration: "Mengoreksi estimasi hari",
+  adjust_finish_date: "Mengoreksi estimasi tanggal selesai",
   adjust_budget: "Mengubah budget",
   reassign: "Mengalihkan approver",
 };

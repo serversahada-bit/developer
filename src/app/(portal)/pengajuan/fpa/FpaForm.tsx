@@ -3,7 +3,9 @@
 import { useState } from "react";
 import { ArrowLeftRight as Exchange, FileText, KeyRound as Key, Lock, Monitor as Desktop, Server } from "lucide-react";
 import ActionForm from "@/components/ActionForm";
+import { formatDate } from "@/lib/dates";
 import type { ScopeItem } from "@/lib/scope";
+import { minimumFinishDate, SCALE_MIN_WORKDAYS, WEEKDAY_LABELS } from "@/lib/workdays";
 import { submitApprovalAction } from "../actions";
 import { ApprovalNotice, DivisionField, FormButtons, FormHeader, NumberBadge, RequesterCard, ScopeItemsField, SectionHeader, type FormContext } from "../FormParts";
 
@@ -20,7 +22,7 @@ export interface FpaValues {
   metode_eksekusi: string[];
   status_biaya: string;
   skala_aplikasi: string;
-  estimasi_durasi: string;
+  estimasi_selesai: string;
   estimasi_biaya: string;
   catatan_server: string;
   catatan_lisensi: string;
@@ -34,9 +36,12 @@ const URGENCY = [
   { value: "Low", dot: "bg-green-500", checked: "has-[:checked]:border-emerald-500 has-[:checked]:bg-emerald-50", text: "Fitur tambahan/penunjang, tidak kritis" },
 ];
 
-export default function FpaForm({ context, values, revisionId }: { context: FormContext; values: FpaValues; revisionId: number }) {
+// `today` and `workdays` come from the server, so the minimum matches the check made on submit.
+export default function FpaForm({ context, values, revisionId, today, workdays }: { context: FormContext; values: FpaValues; revisionId: number; today: string; workdays: number[] }) {
   const [berbayar, setBerbayar] = useState(values.status_biaya === "Berbayar");
   const [biaya, setBiaya] = useState(values.estimasi_biaya);
+  const [skala, setSkala] = useState(values.skala_aplikasi);
+  const minimum = minimumFinishDate(today, skala, workdays);
 
   return (
     <div className="mx-auto max-w-4xl py-8">
@@ -132,18 +137,23 @@ export default function FpaForm({ context, values, revisionId }: { context: Form
                     </div>
                   </fieldset>
                   <fieldset>
-                    <legend className="form-label">Skala Aplikasi</legend>
-                    <div className="mt-1 space-y-2">
+                    <legend className="form-label">Skala Aplikasi <span className="text-red-500">*</span></legend>
+                    <div className="mt-1 space-y-2" onChange={(e) => setSkala((e.target as HTMLInputElement).value)}>
                       {[["Kecil/Nemo Tetra", "Kecil / Nemo Tetra"], ["Menengah/Salmon", "Menengah / Salmon"], ["Besar/Whale", "Besar / Whale"]].map(([value, label]) => (
-                        <label key={value} className="flex cursor-pointer items-center gap-2 text-sm"><input type="radio" name="skala_aplikasi" value={value} defaultChecked={values.skala_aplikasi === value} className="text-indigo-600" /> {label}</label>
+                        <label key={value} className="flex cursor-pointer items-center gap-2 text-sm"><input type="radio" name="skala_aplikasi" value={value} defaultChecked={values.skala_aplikasi === value} required className="text-indigo-600" /> {label} <span className="text-xs text-gray-400">({SCALE_MIN_WORKDAYS[value]}+ hari kerja)</span></label>
                       ))}
                     </div>
                   </fieldset>
                 </div>
                 <div className="grid grid-cols-2 gap-5">
                   <div>
-                    <label htmlFor="estimasi_durasi" className="form-label">Estimasi Durasi (Hari Kalender)</label>
-                    <input type="number" id="estimasi_durasi" name="estimasi_durasi" defaultValue={values.estimasi_durasi} min={1} placeholder="30" className="form-input" />
+                    <label htmlFor="estimasi_selesai" className="form-label">Estimasi Tanggal Selesai <span className="text-red-500">*</span></label>
+                    <input type="date" id="estimasi_selesai" name="estimasi_selesai" defaultValue={values.estimasi_selesai} min={minimum ?? undefined} disabled={minimum === null} required className="form-input" />
+                    <p className="mt-1 text-xs text-gray-500">
+                      {minimum === null
+                        ? "Pilih Skala Aplikasi terlebih dahulu."
+                        : `Minimal ${formatDate(minimum, "j F Y")} (${SCALE_MIN_WORKDAYS[skala]} hari kerja sejak dikirim; hari kerja: ${workdays.map((day) => WEEKDAY_LABELS[day]).join(", ")}).`}
+                    </p>
                   </div>
                   <div>
                     <label htmlFor="estimasi_biaya" className="form-label">Estimasi Biaya</label>

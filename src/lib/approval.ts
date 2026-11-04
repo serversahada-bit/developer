@@ -5,7 +5,7 @@ import { UserError, type CurrentUser } from "./auth";
 import { approvalTable, costColumns, effectiveCost, rupiah, STAGE_LABEL, STAGES, type DocType, type Stage } from "./documents";
 import { queueFpmEmails, queueInfoEmails, queueTurnEmails, type FpmEmailEvent } from "./email";
 import { createChecklistItems } from "./checklist";
-import { todayWib } from "./dates";
+import { formatDate, todayWib } from "./dates";
 import { parseRupiah } from "./form";
 import { findAtasan, karyawanInactive, type Karyawan } from "./identity";
 import { isTimIt, MANAGER_ROLE_LABEL, MANAGER_ROLES, timItWhere, type ManagerRole } from "./menus";
@@ -268,6 +268,13 @@ export function canAdjustBudget(run: ApprovalRun | null, steps: ApprovalStep[], 
   return (stage === "tim_it" || stage === "manager_it") && canActApproval(run, steps, user);
 }
 
+// An FPA's finish date: Admin (Tim IT included) while it awaits any decision, Manager IT during
+// their own turn.
+export function canAdjustFinishDate(run: ApprovalRun | null, steps: ApprovalStep[], user: CurrentUser): boolean {
+  if (!run || run.state !== "pending" || run.document_type !== "fpa") return false;
+  return user.role === "Admin" || (currentStep(run, steps)?.stage === "manager_it" && canActApproval(run, steps, user));
+}
+
 // Only Manager IT (and the old per-requester routes) can end a document; other stages send it back.
 export function canRejectFinal(run: ApprovalRun | null, steps: ApprovalStep[]): boolean {
   const stage = currentStep(run, steps)?.stage;
@@ -402,25 +409,54 @@ export async function saveManagerRoles(choices: Record<ManagerRole, number>, adm
   return "Peran approval disimpan.";
 }
 
-// Admin may correct the requester's estimated duration while the document is still awaiting a decision;
-// the original value the requester wrote is kept untouched in estimasi_durasi/tambahan_waktu.
+// Admin may correct the requester's FPA-A extra days while the document is still awaiting a decision;
+// the original value the requester wrote is kept untouched in tambahan_waktu. An FPA's estimate is a
+// finish date, corrected with adjustFinishDate.
 export async function adjustEstimatedDuration(type: DocType, id: number, newValue: number | null, user: CurrentUser): Promise<string> {
   if (user.role !== "Admin") throw new UserError("Hanya Admin yang dapat mengoreksi estimasi hari.");
+  if (type !== "fpaa") throw new UserError("Estimasi FPA dikoreksi dalam bentuk tanggal selesai.");
   if (newValue !== null && (newValue < 0 || newValue > 99999999)) throw new UserError("Estimasi hari tidak valid.");
-  const table = approvalTable(type);
-  const originalColumn = type === "fpa" ? "estimasi_durasi" : "tambahan_waktu";
-  const adminColumn = type === "fpa" ? "estimasi_durasi_admin" : "tambahan_waktu_admin";
   await transaction(async (tx) => {
-    const document = await row(tx, `SELECT * FROM ${table} WHERE id = ? FOR UPDATE`, [id]);
+    const document = await row(tx, "SELECT * FROM fpa_a_submissions WHERE id = ? FOR UPDATE", [id]);
     if (!document) throw new UserError("Dokumen tidak ditemukan.");
     const run = await approvalRun(tx, type, id, true);
     if (!run || run.state !== "pending") throw new UserError("Estimasi hanya dapat dikoreksi selama dokumen masih menunggu approval.");
-    const oldEffective = document[adminColumn] ?? document[originalColumn];
-    await exec(tx, `UPDATE ${table} SET ${adminColumn} = ? WHERE id = ?`, [newValue, id]);
+    const oldEffective = document.tambahan_waktu_admin ?? document.tambahan_waktu;
+    await exec(tx, "UPDATE fpa_a_submissions SET tambahan_waktu_admin = ? WHERE id = ?", [newValue, id]);
     const note = `${oldEffective !== null ? `${oldEffective} hari` : "belum dikoreksi"} -> ${newValue !== null ? `${newValue} hari` : "dikembalikan ke estimasi pemohon"}`;
     await approvalEvent(tx, run, user, "adjust_duration", note);
   });
   return "Estimasi hari berhasil dikoreksi.";
+}
+
+// The day the current version was sent: the first submission, or the latest resubmission.
+export async function lastSentDate(conn: Db, run: ApprovalRun): Promise<string> {
+  const sent = await scalar<string>(conn, "SELECT DATE(MAX(created_at)) FROM approval_events WHERE run_id = ? AND action IN ('submit', 'resubmit')", [run.id]);
+  return sent ?? run.created_at.slice(0, 10);
+}
+
+// Admin or Manager IT (see canAdjustFinishDate) corrects an FPA's estimated finish date. Any date
+// from the day it was sent is allowed (the scale minimum binds only the requester); null returns to
+// the requester's date, which stays untouched in estimasi_selesai. Everyone involved is mailed.
+export async function adjustFinishDate(id: number, newDate: string | null, user: CurrentUser): Promise<string> {
+  await transaction(async (tx) => {
+    const document = await row(tx, "SELECT * FROM fpa_submissions WHERE id = ? FOR UPDATE", [id]);
+    if (!document) throw new UserError("Dokumen tidak ditemukan.");
+    const run = await approvalRun(tx, "fpa", id, true);
+    const steps = run ? await approvalSteps(tx, run) : [];
+    if (!run || !canAdjustFinishDate(run, steps, user)) {
+      throw new UserError("Estimasi tanggal selesai hanya dapat dikoreksi oleh Admin selama dokumen menunggu approval, atau oleh Manager IT saat gilirannya.");
+    }
+    const sent = await lastSentDate(tx, run);
+    if (newDate !== null && newDate < sent) throw new UserError(`Estimasi tanggal selesai tidak boleh sebelum tanggal dokumen dikirim (${formatDate(sent, "j F Y")}).`);
+    const describe = (date: string | null) => (date ? formatDate(date, "j F Y") : "-");
+    const before = document.estimasi_selesai_admin ?? document.estimasi_selesai;
+    await exec(tx, "UPDATE fpa_submissions SET estimasi_selesai_admin = ? WHERE id = ?", [newDate, id]);
+    const note = `${describe(before)} → ${newDate !== null ? describe(newDate) : `${describe(document.estimasi_selesai)} (dikembalikan ke estimasi pemohon)`}`;
+    const eventId = await approvalEvent(tx, run, user, "adjust_finish_date", note);
+    await queueInfoEmails(tx, run.id, eventId, await involvedIds(tx, run, user.id));
+  });
+  return "Estimasi tanggal selesai berhasil dikoreksi.";
 }
 
 export async function transitionFpmStatus(id: number, action: string, user: CurrentUser): Promise<string> {

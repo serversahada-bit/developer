@@ -129,6 +129,7 @@ function approvalEmailMessage(job: Row, document: Row, run: Row, current: Row | 
       revision: ["Dikembalikan untuk revisi", `${actor} mengembalikan pengajuan untuk direvisi.${note}${isRequester ? "\n\nSilakan perbaiki lalu kirim ulang. Approval akan dimulai lagi dari tahap pertama." : ""}`],
       reject: ["Ditolak", `${actor} menolak pengajuan.${note}`],
       adjust_budget: ["Budget diubah", `${actor} mengubah budget pengajuan.${note}`],
+      adjust_finish_date: ["Estimasi tanggal selesai diubah", `${actor} mengubah estimasi tanggal selesai pengajuan.${job.event_note ? `\nPerubahan: ${job.event_note}` : ""}`],
       resubmit: ["Revisi dikirim ulang", `${actor} mengirim ulang pengajuan setelah revisi (putaran ${job.cycle}). Approval dimulai lagi dari tahap pertama.`],
     };
     const [title, body] = info[job.event_action] ?? ["Pembaruan pengajuan", `Ada pembaruan pada pengajuan ini oleh ${actor}.${note}`];
