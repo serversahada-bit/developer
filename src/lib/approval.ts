@@ -9,7 +9,9 @@ import { formatDate, todayWib } from "./dates";
 import { parseRupiah } from "./form";
 import { findAtasan, karyawanInactive, type Karyawan } from "./identity";
 import { isTimIt, MANAGER_ROLE_LABEL, MANAGER_ROLES, timItWhere, type ManagerRole } from "./menus";
+import { approvalLimits, workingDays } from "./settings";
 import { ensureUserForKaryawan } from "./users";
+import { formatDeadline, stageSchedule } from "./workdays";
 
 export interface ApprovalRun {
   id: number;
@@ -35,6 +37,12 @@ export interface ApprovalStep {
   state: "waiting" | "approved" | "rejected" | "revision" | "skipped";
   note: string | null;
   acted_at: string | null;
+  // Time limit of a waiting step of the fixed stages, fixed when it opens (see stageSchedule).
+  due_days: number | null;
+  due_at: string | null;
+  remind_at: string | null;
+  reminded_at: string | null;
+  auto_decided: number;
 }
 
 interface Approver {
@@ -42,6 +50,10 @@ interface Approver {
   full_name: string;
   karyawan_id: number | null;
 }
+
+// Who an event is recorded for: a signed-in user, or the system when a stage's time limit passes.
+type Actor = Pick<CurrentUser, "full_name"> & { id: number | null };
+const SYSTEM: Actor = { id: null, full_name: "Sistem (otomatis)" };
 
 export function approvalRun(conn: Db, type: DocType, id: number, lock = false): Promise<ApprovalRun | null> {
   return row<ApprovalRun>(conn, `SELECT * FROM approval_runs WHERE document_type = ? AND document_id = ?${lock ? " FOR UPDATE" : ""}`, [type, id]);
@@ -51,7 +63,7 @@ export function approvalSteps(conn: Db, run: ApprovalRun): Promise<ApprovalStep[
   return rows<ApprovalStep>(conn, "SELECT * FROM approval_steps WHERE run_id = ? AND cycle = ? ORDER BY position", [run.id, run.cycle]);
 }
 
-async function approvalEvent(tx: PoolConnection, run: ApprovalRun, actor: CurrentUser, action: string, note = "", snapshot: Row | null = null): Promise<number> {
+async function approvalEvent(tx: PoolConnection, run: ApprovalRun, actor: Actor, action: string, note = "", snapshot: Row | null = null): Promise<number> {
   const result = await exec(tx, "INSERT INTO approval_events (run_id, cycle, actor_id, actor_name, action, note, document_snapshot) VALUES (?, ?, ?, ?, ?, ?, ?)", [
     run.id, run.cycle, actor.id, actor.full_name, action, note, snapshot === null ? null : JSON.stringify(snapshot),
   ]);
@@ -159,6 +171,13 @@ interface Flow {
   atasan: AtasanResult | null;
 }
 
+// The time limit a stage gets when it opens now: Admin's setting at this moment, in working days.
+async function stageDeadline(conn: Db, stage: Stage): Promise<{ days: number; due: string; remind: string | null }> {
+  const days = (await approvalLimits(conn))[stage];
+  const now = String(await scalar(conn, "SELECT NOW()"));
+  return { days, ...stageSchedule(now, days, await workingDays(conn)) };
+}
+
 // Creates the steps after `after` (null: from the start of the cycle) until one needs a decision,
 // recording each skipped stage with its reason. Consecutive stages held by the same person are
 // decided once. Returns false when no stage is left, i.e. the document is approved.
@@ -191,9 +210,11 @@ async function openNextStage(tx: PoolConnection, flow: Flow, after: Stage | null
     }
 
     position++;
-    await exec(tx, `INSERT INTO approval_steps (run_id, cycle, position, stage, approver_id, approver_name, state, note, acted_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${skip === null ? "NULL" : "NOW()"})`, [
+    const deadline = skip === null ? await stageDeadline(tx, stage) : null;
+    await exec(tx, `INSERT INTO approval_steps (run_id, cycle, position, stage, approver_id, approver_name, state, note, acted_at, due_days, due_at, remind_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${skip === null ? "NULL" : "NOW()"}, ?, ?, ?)`, [
       run.id, run.cycle, position, stage, approver?.id ?? null, approver?.full_name ?? STAGE_LABEL[stage], skip === null ? "waiting" : "skipped", skip,
+      deadline?.days ?? null, deadline?.due ?? null, deadline?.remind ?? null,
     ]);
     if (skip !== null) continue;
     await exec(tx, "UPDATE approval_runs SET current_position = ? WHERE id = ?", [position, run.id]);
@@ -214,7 +235,7 @@ async function finishApproved(tx: PoolConnection, type: DocType, id: number, run
 }
 
 // The requester and everyone who has already decided on the document, except the actor.
-async function involvedIds(tx: PoolConnection, run: ApprovalRun, actorId: number): Promise<number[]> {
+async function involvedIds(tx: PoolConnection, run: ApprovalRun, actorId: number | null): Promise<number[]> {
   const approvers = await rows<{ approver_id: number }>(tx, `SELECT DISTINCT approver_id FROM approval_steps
     WHERE run_id = ? AND approver_id IS NOT NULL AND state IN ('approved', 'revision', 'rejected')`, [run.id]);
   return [run.requester_id, ...approvers.map((step) => Number(step.approver_id))].filter((id) => id !== actorId);
@@ -307,41 +328,142 @@ export async function decideApproval(type: DocType, id: number, user: CurrentUse
     if (cycle !== run.cycle || position !== run.current_position) throw new UserError("Tahap approval sudah berubah. Muat ulang halaman.");
     if (document.status_dokumen !== "Diajukan") throw new UserError("Status dokumen tidak sesuai untuk approval.");
     if (action === "reject" && !canRejectFinal(run, steps)) throw new UserError("Hanya Manager IT yang dapat menolak final. Gunakan Kembalikan untuk Revisi.");
-    const current = currentStep(run, steps)!;
-    const state = ({ approve: "approved", reject: "rejected", revision: "revision" } as const)[action as "approve"];
-    // A Tim IT step records the member who decided it.
-    await exec(tx, "UPDATE approval_steps SET state = ?, note = ?, acted_at = NOW(), approver_id = ?, approver_name = ? WHERE run_id = ? AND cycle = ? AND position = ?", [
-      state, note, user.id, user.full_name, run.id, cycle, position,
-    ]);
-
-    if (action === "approve") {
-      let hasNext: boolean;
-      if (current.stage === null) {
-        // Old per-requester route: its steps already exist.
-        hasNext = position < steps.length;
-        if (hasNext) await exec(tx, "UPDATE approval_runs SET current_position = current_position + 1 WHERE id = ?", [run.id]);
-      } else {
-        hasNext = await openNextStage(tx, { type, id, run, atasan: null }, current.stage, user.id);
-      }
-      if (hasNext) {
-        const eventId = await approvalEvent(tx, run, user, "approve", note);
-        await queueTurnEmails(tx, run.id, eventId);
-        await queueInfoEmails(tx, run.id, eventId, [run.requester_id]);
-        return "Persetujuan disimpan dan diteruskan ke tahap berikutnya.";
-      }
-      await finishApproved(tx, type, id, run, document);
-      const eventId = await approvalEvent(tx, run, user, "approve_final", note);
-      await queueInfoEmails(tx, run.id, eventId, await involvedIds(tx, run, user.id));
-      return "Disetujui final. Project berhasil dibuat.";
-    }
-
-    await exec(tx, "UPDATE approval_runs SET state = ? WHERE id = ?", [state, run.id]);
-    await exec(tx, "UPDATE approval_steps SET state = 'skipped' WHERE run_id = ? AND cycle = ? AND state = 'waiting'", [run.id, cycle]);
-    await exec(tx, `UPDATE ${table} SET status_dokumen = ? WHERE id = ?`, [action === "reject" ? "Ditolak" : "Revisi", id]);
-    const eventId = await approvalEvent(tx, run, user, action, note);
-    await queueInfoEmails(tx, run.id, eventId, await involvedIds(tx, run, user.id));
-    return action === "reject" ? "Pengajuan ditolak." : "Pengajuan dikembalikan kepada pemohon untuk direvisi.";
+    const outcome = await applyDecision(tx, { type, id, document, run, steps, current: currentStep(run, steps)! }, user, action as Decision, note);
+    return {
+      next: "Persetujuan disimpan dan diteruskan ke tahap berikutnya.",
+      final: "Disetujui final. Project berhasil dibuat.",
+      reject: "Pengajuan ditolak.",
+      revision: "Pengajuan dikembalikan kepada pemohon untuk direvisi.",
+    }[outcome];
   });
+}
+
+type Decision = "approve" | "reject" | "revision";
+
+interface DecisionTarget {
+  type: DocType;
+  id: number;
+  document: Row;
+  run: ApprovalRun;
+  steps: ApprovalStep[];
+  current: ApprovalStep;
+}
+
+// Records a decision on the current step, moves the document on and queues the emails. A user's
+// decision on a Tim IT step makes them its approver; a system decision (time limit passed) keeps the
+// approver who missed it, is recorded as auto_*, and also informs `missed` (that approver, or every
+// Tim IT member).
+async function applyDecision(tx: PoolConnection, target: DecisionTarget, actor: Actor, action: Decision, note: string, missed: number[] = []): Promise<"next" | "final" | "reject" | "revision"> {
+  const { type, id, document, run, steps, current } = target;
+  const state = ({ approve: "approved", reject: "rejected", revision: "revision" } as const)[action];
+  const where = [run.id, run.cycle, current.position];
+  if (actor.id === null) {
+    await exec(tx, "UPDATE approval_steps SET state = ?, note = ?, acted_at = NOW(), auto_decided = 1 WHERE run_id = ? AND cycle = ? AND position = ?", [state, note, ...where]);
+  } else {
+    await exec(tx, "UPDATE approval_steps SET state = ?, note = ?, acted_at = NOW(), approver_id = ?, approver_name = ? WHERE run_id = ? AND cycle = ? AND position = ?", [
+      state, note, actor.id, actor.full_name, ...where,
+    ]);
+  }
+  const eventAction = (name: string) => (actor.id === null ? `auto_${name}` : name);
+
+  if (action === "approve") {
+    let hasNext: boolean;
+    if (current.stage === null) {
+      // Old per-requester route: its steps already exist.
+      hasNext = current.position < steps.length;
+      if (hasNext) await exec(tx, "UPDATE approval_runs SET current_position = current_position + 1 WHERE id = ?", [run.id]);
+    } else {
+      // A system approval merges with nobody: a next stage held by the same person still asks them.
+      hasNext = await openNextStage(tx, { type, id, run, atasan: null }, current.stage, actor.id);
+    }
+    if (hasNext) {
+      const eventId = await approvalEvent(tx, run, actor, eventAction("approve"), note);
+      await queueTurnEmails(tx, run.id, eventId);
+      await queueInfoEmails(tx, run.id, eventId, [run.requester_id, ...missed]);
+      return "next";
+    }
+    await finishApproved(tx, type, id, run, document);
+    const eventId = await approvalEvent(tx, run, actor, eventAction("approve_final"), note);
+    await queueInfoEmails(tx, run.id, eventId, [...(await involvedIds(tx, run, actor.id)), ...missed]);
+    return "final";
+  }
+
+  await exec(tx, "UPDATE approval_runs SET state = ? WHERE id = ?", [state, run.id]);
+  await exec(tx, "UPDATE approval_steps SET state = 'skipped' WHERE run_id = ? AND cycle = ? AND state = 'waiting'", [run.id, run.cycle]);
+  await exec(tx, `UPDATE ${approvalTable(type)} SET status_dokumen = ? WHERE id = ?`, [action === "reject" ? "Ditolak" : "Revisi", id]);
+  const eventId = await approvalEvent(tx, run, actor, eventAction(action), note);
+  await queueInfoEmails(tx, run.id, eventId, [...(await involvedIds(tx, run, actor.id)), ...missed]);
+  return action;
+}
+
+// --- Time limits (run by the cron) ----------------------------------------------------------
+
+type DeadlineOutcome = "scheduled" | "reminded" | "decided";
+
+// One document whose current stage needs the system: a stage waiting since before time limits existed
+// gets its limit counted from now; the reminder goes one working day before the limit; once the limit
+// passes, the atasan stage sends the document back for revision and every other stage approves it.
+// Rechecked under the document lock, so a decision made meanwhile wins.
+async function handleDeadline(tx: PoolConnection, type: DocType, id: number): Promise<DeadlineOutcome | null> {
+  const document = await row(tx, `SELECT * FROM ${approvalTable(type)} WHERE id = ? FOR UPDATE`, [id]);
+  const run = await approvalRun(tx, type, id, true);
+  if (!document || !run || run.state !== "pending" || document.status_dokumen !== "Diajukan") return null;
+  const steps = await approvalSteps(tx, run);
+  const current = currentStep(run, steps);
+  if (!current || current.state !== "waiting" || current.stage === null) return null;
+  const where = [run.id, run.cycle, current.position];
+  const now = String(await scalar(tx, "SELECT NOW()"));
+
+  if (current.due_at === null) {
+    const deadline = await stageDeadline(tx, current.stage);
+    await exec(tx, "UPDATE approval_steps SET due_days = ?, due_at = ?, remind_at = ?, reminded_at = NULL WHERE run_id = ? AND cycle = ? AND position = ?", [
+      deadline.days, deadline.due, deadline.remind, ...where,
+    ]);
+    return "scheduled";
+  }
+
+  const label = STAGE_LABEL[current.stage];
+  if (current.due_at <= now) {
+    const days = current.due_days ?? (await approvalLimits(tx))[current.stage];
+    const missed = current.approver_id !== null ? [Number(current.approver_id)] : (await timItMembers(tx)).map((member) => member.id);
+    const target = { type, id, document, run, steps, current };
+    if (current.stage === "atasan") {
+      await applyDecision(tx, target, SYSTEM, "revision", `Dikembalikan otomatis: atasan tidak memutuskan dalam ${days} hari kerja.`, missed);
+    } else {
+      await applyDecision(tx, target, SYSTEM, "approve", `Disetujui otomatis: ${label} tidak memutuskan dalam ${days} hari kerja.`, missed);
+    }
+    return "decided";
+  }
+
+  if (current.remind_at !== null && current.remind_at <= now && current.reminded_at === null) {
+    await exec(tx, "UPDATE approval_steps SET reminded_at = NOW() WHERE run_id = ? AND cycle = ? AND position = ?", where);
+    const result = current.stage === "atasan" ? "dikembalikan otomatis ke pemohon untuk revisi" : "disetujui otomatis oleh sistem";
+    const eventId = await approvalEvent(tx, run, SYSTEM, "deadline_reminder", `Batas keputusan ${label}: ${formatDeadline(current.due_at)}. Jika belum diputuskan, pengajuan ${result}.`);
+    await queueTurnEmails(tx, run.id, eventId);
+    return "reminded";
+  }
+  return null;
+}
+
+// Called by the cron every minute. Each document is handled in its own transaction, so one that cannot
+// move on (for example Manager IT not appointed) is logged and retried without holding up the rest.
+export async function processApprovalDeadlines(limit = 100): Promise<Record<DeadlineOutcome | "failed", number>> {
+  const result = { scheduled: 0, reminded: 0, decided: 0, failed: 0 };
+  const due = await rows<{ document_type: DocType; document_id: number }>(db, `SELECT r.document_type, r.document_id FROM approval_runs r
+    JOIN approval_steps s ON s.run_id = r.id AND s.cycle = r.cycle AND s.position = r.current_position
+    WHERE r.state = 'pending' AND s.state = 'waiting' AND s.stage IS NOT NULL
+      AND (s.due_at IS NULL OR s.due_at <= NOW() OR (s.remind_at <= NOW() AND s.reminded_at IS NULL))
+    ORDER BY s.due_at LIMIT ${Math.max(1, Math.min(500, limit))}`);
+  for (const item of due) {
+    try {
+      const outcome = await transaction((tx) => handleDeadline(tx, item.document_type, Number(item.document_id)));
+      if (outcome) result[outcome]++;
+    } catch (error) {
+      result.failed++;
+      console.error(`Approval time limit for ${item.document_type} #${item.document_id} not processed:`, error instanceof UserError ? error.message : error);
+    }
+  }
+  return result;
 }
 
 export async function activateLegacyApproval(type: DocType, id: number, user: CurrentUser): Promise<void> {
@@ -400,7 +522,10 @@ export async function saveManagerRoles(choices: Record<ManagerRole, number>, adm
         WHERE r.state = 'pending' AND s.state = 'waiting' AND s.stage = ? FOR UPDATE`, [role]);
       for (const run of waiting) {
         if (run.requester_id === target.id) throw new UserError(`${target.full_name} adalah pemohon dokumen yang sedang menunggu ${label}, jadi belum dapat ditunjuk.`);
-        await exec(tx, "UPDATE approval_steps SET approver_id = ?, approver_name = ? WHERE run_id = ? AND cycle = ? AND position = ?", [target.id, target.full_name, run.id, run.cycle, run.position]);
+        // The new holder has not seen the document yet, so their time limit starts now.
+        const deadline = await stageDeadline(tx, role);
+        await exec(tx, `UPDATE approval_steps SET approver_id = ?, approver_name = ?, due_days = ?, due_at = ?, remind_at = ?, reminded_at = NULL
+          WHERE run_id = ? AND cycle = ? AND position = ?`, [target.id, target.full_name, deadline.days, deadline.due, deadline.remind, run.id, run.cycle, run.position]);
         const eventId = await approvalEvent(tx, run, admin, "reassign", `${label} dialihkan dari ${before[role]?.full_name ?? "-"} ke ${target.full_name}.`);
         await queueTurnEmails(tx, run.id, eventId);
       }
@@ -521,7 +646,8 @@ export async function approvalList(type: DocType, user: CurrentUser, view: ListV
     where.push("(d.created_by_user_id = ? OR EXISTS (SELECT 1 FROM approval_steps visible WHERE visible.run_id = r.id AND visible.approver_id = ?))");
     params.push(user.id, user.id);
   }
-  const list = await rows(db, `SELECT d.*, r.state AS workflow_state, s.stage AS current_stage, s.approver_id AS current_approver_id, s.approver_name AS current_approver
+  const list = await rows(db, `SELECT d.*, r.state AS workflow_state, s.stage AS current_stage, s.approver_id AS current_approver_id, s.approver_name AS current_approver,
+      s.due_at AS current_due_at
     FROM ${table} d LEFT JOIN approval_runs r ON r.document_type = ? AND r.document_id = d.id
     LEFT JOIN approval_steps s ON s.run_id = r.id AND s.cycle = r.cycle AND s.position = r.current_position
     ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY d.created_at DESC, d.id DESC`, params);
@@ -531,6 +657,7 @@ export async function approvalList(type: DocType, user: CurrentUser, view: ListV
     approval_label: item.workflow_state === "pending"
       ? waitingLabel(item.current_stage, item.current_approver_id, item.current_approver)
       : labels[item.workflow_state ?? ""] ?? approvalLabel(null, [], item.status_dokumen),
+    approval_due: item.workflow_state === "pending" && item.current_due_at ? `Batas keputusan: ${formatDeadline(item.current_due_at)}` : null,
   }));
 }
 

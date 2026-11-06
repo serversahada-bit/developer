@@ -178,8 +178,15 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
     - Admin mencentang hari kerja (tabel app_settings, key hari_kerja).
       Belum pernah disimpan = Senin-Sabtu. Libur nasional / cuti bersama
       belum dihitung.
-    - Dipakai untuk minimal Estimasi Tanggal Selesai FPA dan tambahan waktu
-      FPA-A pada deadline FPA.
+    - Dipakai untuk minimal Estimasi Tanggal Selesai FPA, tambahan waktu
+      FPA-A pada deadline FPA, dan batas waktu approval.
+
+  Batas Waktu Approval
+    - Admin mengisi jumlah hari kerja per tahap (1-30). Belum pernah disimpan
+      = Atasan 2, Tim IT 2, Manager IT 3, Manager FAT 4 (tabel app_settings,
+      key batas_approval). Akibat lewat batas tetap, tidak bisa diubah
+      (lihat bagian 6).
+    - Perubahan hanya berlaku untuk tahap yang dibuka setelah disimpan.
 
 
 -------------------------------------------------------------------------------
@@ -300,6 +307,43 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
 
   TOLAK FINAL (hanya Manager IT, catatan wajib)
     -> status_dokumen = 'Ditolak', selesai
+
+  BATAS WAKTU PER TAHAP (hari kerja, diatur Admin di menu Users)
+     Tahap         Default   Kalau lewat batas tanpa keputusan
+     Atasan        2 hari    dikembalikan ke pemohon untuk revisi
+     Tim IT        2 hari    disetujui otomatis -> tahap berikutnya
+     Manager IT    3 hari    disetujui otomatis -> FAT, atau disetujui final
+     Manager FAT   4 hari    disetujui otomatis -> disetujui final
+    - Dihitung sejak tahap mulai menunggu sampai jam yang sama N hari kerja
+      kemudian. Contoh: dibuka Senin 15.00, batas 2 hari -> Rabu 15.00.
+      Tahap yang dibuka di hari libur dihitung dari 00.00 hari kerja
+      berikutnya (dibuka Minggu, 2 hari -> akhir hari Selasa, tampil
+      "Selasa ... 23.59"). Libur nasional belum dihitung.
+    - Batas dikunci saat tahap dibuka (approval_steps.due_days / due_at).
+      Admin mengubah pengaturan -> tahap yang sedang menunggu tidak berubah.
+      Admin mengalihkan Manager IT / FAT -> hitungan diulang dari awal untuk
+      akun baru.
+    - Pengingat 1 hari kerja sebelum batas ke approver yang sedang mendapat
+      giliran (tahap Tim IT: semua anggota). Batas 1 hari = tanpa pengingat.
+    - Keputusan otomatis dicatat sebagai "Sistem (otomatis)" dengan catatan,
+      misalnya "Dikembalikan otomatis: atasan tidak memutuskan dalam 2 hari
+      kerja." Tahapnya ditandai auto_decided, approver yang terlewat tetap
+      tercatat di tahap itu dan ikut menerima email pemberitahuan.
+    - Tahap gabungan (atasan = Manager IT, diputuskan sekali) ikut aturan
+      atasan, karena yang menunggu adalah tahap atasan.
+    - Persetujuan otomatis tidak digabung dengan tahap berikutnya: kalau
+      Manager IT = Manager FAT, tahap FAT tetap dibuka untuknya.
+    - Revisi di tangan pemohon tidak punya batas waktu. Kirim ulang = semua
+      tahap mulai lagi, batas dihitung ulang.
+    - Selama belum diproses sistem, approver masih boleh memutuskan.
+    - Dokumen yang sudah menunggu saat fitur ini dirilis dihitung sejak cron
+      pertama kali berjalan. Jalur lama (approval_routes, stage NULL) tidak
+      memakai batas waktu.
+    - Dijalankan oleh cron yang sama dengan email (bagian 11), lewat
+      processApprovalDeadlines di src/lib/approval.ts. Tanpa cron, batas
+      waktu tidak pernah diproses.
+    - Batas keputusan tampil di halaman detail, daftar Approvals, dan email
+      giliran.
 
   Aturan:
     - Hanya yang sedang mendapat giliran yang bisa memutuskan.
@@ -428,6 +472,9 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
      Pemohon kirim revisi        -        info                     turn
      Disetujui final / ditolak   info     info                     -
      Manager dialihkan Admin     -        -                        turn
+     Pengingat batas waktu       -        -                        turn (approver saat ini)
+     Disetujui otomatis          info     info (yang terlewat)     turn
+     Dikembalikan / final otom.  info     info (+ yang terlewat)   -
      (Yang melakukan aksi tidak menerima email atas aksinya sendiri.)
 
   2. Setelah transaksi selesai, aplikasi langsung mencoba mengirim via SMTP
@@ -437,7 +484,8 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
   4. Pengiriman ulang terjadwal lewat cron:
         POST /api/cron/approval-emails
         Header: Authorization: Bearer <CRON_SECRET>
-     (Disarankan dijalankan tiap menit.)
+     (Disarankan dijalankan tiap menit.) Cron ini lebih dulu memproses batas
+     waktu approval (bagian 6), lalu mengirim email yang masuk antrean.
   5. Sebelum mengirim, email 'turn' dicek ulang. Kalau gilirannya sudah
      lewat, ditandai 'skipped'.
   6. Email FPM memakai antrean sendiri (fpm_email_queue) karena FPM tidak

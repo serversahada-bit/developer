@@ -6,7 +6,8 @@ import { getCurrentUser, UserError } from "@/lib/auth";
 import { saveManagerRoles } from "@/lib/approval";
 import { positiveInt, str, strs, type ActionState } from "@/lib/form";
 import { loadKaryawan, type Karyawan } from "@/lib/identity";
-import { saveWorkingDays } from "@/lib/settings";
+import { STAGES, type Stage } from "@/lib/documents";
+import { saveApprovalLimits, saveWorkingDays } from "@/lib/settings";
 import { createUser, deleteUser, updateUser } from "@/lib/users";
 
 async function requireAdmin() {
@@ -90,4 +91,20 @@ export async function saveManagerRolesAction(form: FormData): Promise<ActionStat
   }
   revalidatePath("/", "layout");
   redirect("/users?saved=roles#approval-roles");
+}
+
+export async function saveApprovalLimitsAction(form: FormData): Promise<ActionState> {
+  try {
+    const admin = await requireAdmin();
+    // Anything that is not a small whole number is rejected by saveApprovalLimits as 0.
+    const limits = Object.fromEntries(STAGES.map((stage) => {
+      const value = str(form, `batas_${stage}`).trim();
+      return [stage, /^\d{1,2}$/.test(value) ? Number(value) : 0];
+    })) as Record<Stage, number>;
+    await saveApprovalLimits(limits, admin);
+  } catch (error) {
+    return fail(error);
+  }
+  revalidatePath("/users");
+  redirect("/users?saved=limits#batas-approval");
 }

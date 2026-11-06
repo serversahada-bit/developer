@@ -36,7 +36,7 @@ User `ABSEN_DB_USER` cukup diberi `SELECT` pada tabel `karyawan` dan `tim_saya`.
 | `src/app/(app)/…` | Halaman dengan sidebar: Projects, Activity Log, My Tasks, Task, Calendar, Reports, Approvals, Users. |
 | `src/app/(portal)/pengajuan/…` | Portal dan form FPA, FPA-A, FPM. |
 | `src/app/sso`, `src/app/login`, `src/app/logout` | Masuk, keluar, dan penerima SSO dari Great. |
-| `src/app/api/cron/approval-emails` | Pengiriman ulang antrean email (pengganti `send_approval_emails.php`). |
+| `src/app/api/cron/approval-emails` | Batas waktu approval + pengiriman ulang antrean email (pengganti `send_approval_emails.php`). |
 
 Semua mutasi memakai Server Actions. Next.js menolak action yang `Origin`-nya berbeda dengan host, sehingga setiap form, termasuk Activity Log dan Projects yang di PHP tidak memakai token CSRF, sekarang terlindungi.
 
@@ -100,7 +100,7 @@ Saat ini akun tetap berada di tabel `users`, karena seluruh foreign key riwayat 
 
 ## Email
 
-Isi `MAIL_*` di `.env.local` dan set `MAIL_ENABLED=true`. Kirim ulang antrean secara terjadwal:
+Isi `MAIL_*` di `.env.local` dan set `MAIL_ENABLED=true`. Jalankan cron berikut tiap menit. Cron ini memproses batas waktu approval (pengingat, auto-revisi, dan auto-approve), lalu mengirim ulang antrean email:
 
 ```powershell
 curl -X POST -H "Authorization: Bearer $env:CRON_SECRET" http://localhost:3002/api/cron/approval-emails

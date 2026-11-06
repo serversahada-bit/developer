@@ -6,6 +6,7 @@ import { db, exec, row, rows, scalar, type Row } from "./db";
 import { approvalTable, detailUrl, effectiveCost, revisionUrl, rupiah, STAGE_LABEL, type DocType, type Stage } from "./documents";
 import { formatDate } from "./dates";
 import { timItWhere } from "./menus";
+import { formatDeadline } from "./workdays";
 
 interface MailSettings {
   enabled: boolean;
@@ -109,7 +110,8 @@ function approvalEmailMessage(job: Row, document: Row, run: Row, current: Row | 
   const requester = document[type === "fpa" ? "nama_pemohon" : "user_nama"];
   const cost = effectiveCost(type, document);
   const isRequester = Number(job.recipient_id) === Number(run.requester_id);
-  const link = settings.baseUrl + (job.event_action === "revision" && isRequester && run.state === "revision" ? revisionUrl(type, Number(job.document_id)) : detailUrl(type, Number(job.document_id)));
+  const toRevision = (job.event_action === "revision" || job.event_action === "auto_revision") && isRequester && run.state === "revision";
+  const link = settings.baseUrl + (toRevision ? revisionUrl(type, Number(job.document_id)) : detailUrl(type, Number(job.document_id)));
   const actor = String(job.actor_name ?? "");
   const note = job.event_note ? `\nCatatan: ${job.event_note}` : "";
 
@@ -118,10 +120,17 @@ function approvalEmailMessage(job: Row, document: Row, run: Row, current: Row | 
   let button = "Lihat Pengajuan";
   if (job.kind === "turn") {
     const stage = current?.stage ? STAGE_LABEL[current.stage as Stage] : `tahap ${job.position}`;
-    subject = `[${typeLabel}] Menunggu approval Anda (${stage}) - ${subjectNumber}`;
-    intro = `Ada pengajuan ${typeLabel} yang menunggu keputusan Anda sebagai ${stage}.`;
-    if (job.event_action === "resubmit") intro += ` Pemohon telah mengirim revisi (putaran ${job.cycle}).`;
-    if (job.event_action === "reassign") intro += " Tahap ini dialihkan kepada Anda oleh Admin.";
+    if (job.event_action === "deadline_reminder") {
+      subject = `[${typeLabel}] Pengingat: batas keputusan Anda (${stage}) - ${subjectNumber}`;
+      intro = `Pengajuan ${typeLabel} ini masih menunggu keputusan Anda sebagai ${stage}.\n${job.event_note ?? ""}`;
+    } else {
+      subject = `[${typeLabel}] Menunggu approval Anda (${stage}) - ${subjectNumber}`;
+      intro = `Ada pengajuan ${typeLabel} yang menunggu keputusan Anda sebagai ${stage}.`;
+      if (job.event_action === "resubmit") intro += ` Pemohon telah mengirim revisi (putaran ${job.cycle}).`;
+      if (job.event_action === "reassign") intro += " Tahap ini dialihkan kepada Anda oleh Admin.";
+      if (job.event_action === "auto_approve") intro += ` Tahap sebelumnya diputuskan oleh sistem. ${job.event_note ?? ""}`;
+    }
+    if (current?.due_at) intro += `\n\nBatas keputusan: ${formatDeadline(current.due_at)}.`;
   } else {
     const info: Record<string, [string, string]> = {
       approve: ["Disetujui, lanjut ke tahap berikutnya", `Pengajuan disetujui oleh ${actor} dan diteruskan ke tahap berikutnya.${note}`],
@@ -131,11 +140,15 @@ function approvalEmailMessage(job: Row, document: Row, run: Row, current: Row | 
       adjust_budget: ["Budget diubah", `${actor} mengubah budget pengajuan.${note}`],
       adjust_finish_date: ["Estimasi tanggal selesai diubah", `${actor} mengubah estimasi tanggal selesai pengajuan.${job.event_note ? `\nPerubahan: ${job.event_note}` : ""}`],
       resubmit: ["Revisi dikirim ulang", `${actor} mengirim ulang pengajuan setelah revisi (putaran ${job.cycle}). Approval dimulai lagi dari tahap pertama.`],
+      // Decisions the system made because a stage's time limit passed; the note names the stage.
+      auto_approve: ["Disetujui otomatis, lanjut ke tahap berikutnya", `${job.event_note ?? ""} Pengajuan diteruskan ke tahap berikutnya.`],
+      auto_approve_final: ["Disetujui final (otomatis)", `${job.event_note ?? ""} Pengajuan disetujui final. Project dibuat dan pengerjaan dapat dimulai.`],
+      auto_revision: ["Dikembalikan otomatis untuk revisi", `${job.event_note ?? ""} Pengajuan dikembalikan kepada pemohon untuk direvisi.${isRequester ? "\n\nSilakan hubungi atasan Anda, lalu kirim ulang pengajuan. Approval akan dimulai lagi dari tahap pertama." : ""}`],
     };
     const [title, body] = info[job.event_action] ?? ["Pembaruan pengajuan", `Ada pembaruan pada pengajuan ini oleh ${actor}.${note}`];
     subject = `[${typeLabel}] ${title} - ${subjectNumber}`;
     intro = body;
-    if (job.event_action === "revision" && isRequester && run.state === "revision") button = "Perbaiki Pengajuan";
+    if (toRevision) button = "Perbaiki Pengajuan";
   }
 
   const details = [
@@ -265,7 +278,7 @@ export function dispatchApprovalEmails(limit = 10, runId: number | null = null, 
     for (const job of jobs) {
       // Refresh the turn immediately before sending; skip decision requests left over from an older turn.
       const run = await row(conn, "SELECT state, cycle, current_position, requester_id FROM approval_runs WHERE id = ?", [job.run_id]);
-      const current = run ? await row(conn, "SELECT stage, approver_id, approver_name, state FROM approval_steps WHERE run_id = ? AND cycle = ? AND position = ?", [job.run_id, run.cycle, run.current_position]) : null;
+      const current = run ? await row(conn, "SELECT stage, approver_id, approver_name, state, due_at FROM approval_steps WHERE run_id = ? AND cycle = ? AND position = ?", [job.run_id, run.cycle, run.current_position]) : null;
       const staleTurn = job.kind === "turn" && (!run || run.state !== "pending" || Number(run.cycle) !== Number(job.cycle) || Number(run.current_position) !== Number(job.position) || current?.state !== "waiting");
       if (!run || staleTurn) {
         await skipQueued(conn, "approval_email_queue", job, result);

@@ -4,6 +4,7 @@ import { approvalLabel, canActApproval, canAdjustBudget, canRejectFinal, type Ap
 import type { Row } from "@/lib/db";
 import { costColumns, effectiveCost, revisionUrl, rupiah, STAGE_LABEL, type DocType } from "@/lib/documents";
 import { decodeScopeItems, scopeItemsAsText } from "@/lib/scope";
+import { formatDeadline } from "@/lib/workdays";
 import ActionForm, { SubmitButton } from "@/components/ActionForm";
 import { activateApprovalAction, budgetAction, decisionAction } from "../../actions";
 
@@ -26,7 +27,23 @@ const ACTION_LABELS: Record<string, string> = {
   adjust_finish_date: "Mengoreksi estimasi tanggal selesai",
   adjust_budget: "Mengubah budget",
   reassign: "Mengalihkan approver",
+  auto_approve: "Menyetujui otomatis (batas waktu lewat)",
+  auto_approve_final: "Menyetujui final otomatis (batas waktu lewat)",
+  auto_revision: "Mengembalikan untuk revisi otomatis (batas waktu lewat)",
+  deadline_reminder: "Mengirim pengingat batas waktu",
 };
+
+// A step the system decided because its time limit passed.
+const AUTO_STEP_LABELS: Partial<Record<ApprovalStep["state"], string>> = {
+  approved: "Disetujui otomatis (sistem)",
+  revision: "Dikembalikan otomatis (sistem)",
+};
+
+function stepStatus(step: ApprovalStep, active: boolean, skipped: boolean): string {
+  if (active) return "Menunggu persetujuan";
+  if (skipped) return "Dilewati";
+  return (step.auto_decided ? AUTO_STEP_LABELS[step.state] : undefined) ?? STEP_LABELS[step.state];
+}
 
 function titleCase(field: string): string {
   return field.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -115,7 +132,12 @@ export default function ApprovalPanel({ type, document, run, steps, events, user
               const skipped = step.state === "skipped" && step.stage !== null && step.note !== null;
               return (
                 <li key={step.position} className={`rounded-lg border p-3 ${active ? "border-indigo-300 bg-indigo-50" : skipped ? "border-dashed border-gray-200 text-gray-500" : "border-gray-200"}`}>
-                  <div className="text-sm font-semibold">{step.position}. {stepTitle(step)} — {active ? "Menunggu persetujuan" : skipped ? "Dilewati" : STEP_LABELS[step.state]}</div>
+                  <div className="text-sm font-semibold">{step.position}. {stepTitle(step)} — {stepStatus(step, active, skipped)}</div>
+                  {active && step.due_at && (
+                    <div className="mt-1 text-xs font-medium text-indigo-800">
+                      Batas keputusan: {formatDeadline(step.due_at)} ({step.stage === "atasan" ? "lewat batas: dikembalikan ke pemohon untuk revisi" : "lewat batas: disetujui otomatis"})
+                    </div>
+                  )}
                   {step.acted_at && <div className="mt-1 text-xs text-gray-500">{step.acted_at}</div>}
                   {step.note && <p className="mt-1 whitespace-pre-line text-sm">{step.note}</p>}
                 </li>

@@ -7,12 +7,13 @@ import { db } from "@/lib/db";
 import { formatDate } from "@/lib/dates";
 import { karyawanInactive, loadKaryawan, type Karyawan } from "@/lib/identity";
 import { MANAGER_MENUS, MANAGER_ROLE_LABEL, MANAGER_ROLES, NON_ADMIN_MENUS, menuByKey } from "@/lib/menus";
-import { workingDays } from "@/lib/settings";
+import { STAGE_LABEL, STAGES } from "@/lib/documents";
+import { approvalLimits, workingDays } from "@/lib/settings";
 import { listUsers } from "@/lib/users";
-import { WEEKDAY_LABELS } from "@/lib/workdays";
+import { MAX_APPROVAL_LIMIT, MIN_APPROVAL_LIMIT, WEEKDAY_LABELS } from "@/lib/workdays";
 import ActionForm, { SubmitButton } from "@/components/ActionForm";
 import { Notice } from "@/components/ui";
-import { deleteUserAction, saveManagerRolesAction, saveWorkingDaysAction } from "./actions";
+import { deleteUserAction, saveApprovalLimitsAction, saveManagerRolesAction, saveWorkingDaysAction } from "./actions";
 import UserForm, { type KaryawanOption, type UserFormValues } from "./UserForm";
 
 export const metadata: Metadata = { title: "Users" };
@@ -23,6 +24,14 @@ const SAVED: Record<string, string> = {
   deleted: "User berhasil dihapus.",
   roles: "Manager IT dan Manager FAT disimpan. Dokumen yang sedang menunggu peran tersebut dialihkan ke akun baru.",
   workdays: "Hari kerja disimpan.",
+  limits: "Batas waktu approval disimpan. Berlaku untuk tahap yang dibuka setelah ini; dokumen yang sedang menunggu tetap memakai batas sebelumnya.",
+};
+
+const LIMIT_RESULT: Record<string, string> = {
+  atasan: "Dikembalikan ke pemohon untuk revisi",
+  tim_it: "Disetujui otomatis",
+  manager_it: "Disetujui otomatis",
+  manager_fat: "Disetujui otomatis (disetujui final)",
 };
 
 const idParam = (value: unknown) => (typeof value === "string" && /^[1-9][0-9]{0,9}$/.test(value) ? Number(value) : 0);
@@ -57,6 +66,7 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
   const timIt = await timItMembers(db);
   const managerIds = new Set(Object.values(holders).map((holder) => holder.id));
   const workdays = await workingDays();
+  const limits = await approvalLimits();
 
   const editing = editId ? users.find((u) => u.id === editId) : undefined;
   const deleting = deleteId ? users.find((u) => u.id === deleteId) : undefined;
@@ -141,6 +151,35 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
                 <input type="checkbox" name="hari_kerja[]" value={day} defaultChecked={workdays.includes(day)} className="rounded text-indigo-600" /> {WEEKDAY_LABELS[day]}
               </label>
             ))}
+            <SubmitButton className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60">Simpan</SubmitButton>
+          </ActionForm>
+        </section>
+
+        <section id="batas-approval" className="rounded-xl border border-gray-200 bg-white p-5 md:p-6">
+          <h2 className="text-lg font-bold text-gray-900">Batas Waktu Approval</h2>
+          <p className="mb-5 mt-1 text-sm text-gray-500">
+            Dalam hari kerja ({MIN_APPROVAL_LIMIT}-{MAX_APPROVAL_LIMIT}), dihitung sejak tahap mulai menunggu sampai jam yang sama. Pengingat dikirim 1 hari kerja sebelum batas.
+            Perubahan berlaku untuk tahap yang dibuka setelah disimpan.
+          </p>
+          <ActionForm action={saveApprovalLimitsAction} className="space-y-4">
+            <div className="overflow-x-auto">
+              <table className="w-full max-w-2xl text-left text-sm">
+                <thead className="text-gray-500">
+                  <tr>{["Tahap", "Hari kerja", "Kalau lewat batas"].map((h) => <th key={h} scope="col" className="whitespace-nowrap py-2 pr-4">{h}</th>)}</tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {STAGES.map((stage) => (
+                    <tr key={stage}>
+                      <td className="py-2 pr-4 font-medium text-gray-900"><label htmlFor={`batas-${stage}`}>{STAGE_LABEL[stage]}</label></td>
+                      <td className="py-2 pr-4">
+                        <input type="number" id={`batas-${stage}`} name={`batas_${stage}`} required min={MIN_APPROVAL_LIMIT} max={MAX_APPROVAL_LIMIT} step={1} defaultValue={limits[stage]} className="w-20 rounded-lg border border-gray-300 px-3 py-1.5" />
+                      </td>
+                      <td className={`py-2 pr-4 ${stage === "atasan" ? "text-amber-700" : "text-gray-600"}`}>{LIMIT_RESULT[stage]}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
             <SubmitButton className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60">Simpan</SubmitButton>
           </ActionForm>
         </section>

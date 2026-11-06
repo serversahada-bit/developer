@@ -50,6 +50,7 @@ const statusColumn: Column = {
     <>
       <StatusBadge status={item.status_dokumen} />
       {item.approval_label && <p className="mt-1 text-xs text-gray-600">{item.approval_label}</p>}
+      {item.approval_due && <p className="text-xs text-indigo-700">{item.approval_due}</p>}
     </>
   ),
 };
