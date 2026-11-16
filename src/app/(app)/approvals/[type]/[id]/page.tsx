@@ -5,6 +5,7 @@ import { AlertTriangle, ArrowLeft, BarChart3, Bug, CalendarDays, Clock, Coins, H
 import { canUseMenu, requireUser, type CurrentUser } from "@/lib/auth";
 import { approvalRun, approvalSteps, canAdjustFinishDate, canViewApproval, lastSentDate } from "@/lib/approval";
 import { checklistItems } from "@/lib/checklist";
+import { completionInfo } from "@/lib/completion";
 import { db, row, rows, type Row } from "@/lib/db";
 import { formatDate } from "@/lib/dates";
 import { fpmDeadline } from "@/lib/deadlines";
@@ -121,7 +122,9 @@ export default async function ApprovalDetailPage({ params, searchParams }: PageP
   }
   const steps = run ? await approvalSteps(db, run) : [];
   const events = run ? await rows(db, "SELECT * FROM approval_events WHERE run_id = ? ORDER BY id", [run.id]) : [];
-  const checklist = type !== "fpm" && data.status_dokumen === "Disetujui" ? await checklistItems(type, id) : [];
+  const afterApproval = type !== "fpm" && ["Disetujui", "Selesai"].includes(data.status_dokumen);
+  const checklist = afterApproval ? await checklistItems(type, id) : [];
+  const completion = type !== "fpm" ? await completionInfo(type, data, user, checklist.length) : null;
   const canAdjustDuration = type !== "fpm" && user.role === "Admin" && run?.state === "pending";
   const canManageFpm = type === "fpm" && user.role === "Admin" && ["Open", "In Progress"].includes(data.status_dokumen);
   const canAdjustFinish = type === "fpa" && canAdjustFinishDate(run, steps, user);
@@ -150,7 +153,7 @@ export default async function ApprovalDetailPage({ params, searchParams }: PageP
 
       <main className="mx-auto w-full max-w-5xl p-6">
         {notice && <Notice>{notice}</Notice>}
-        {type !== "fpm" && <ApprovalPanel type={type} document={data} run={run} steps={steps} events={events} user={user} />}
+        {type !== "fpm" && completion && <ApprovalPanel type={type} document={data} run={run} steps={steps} events={events} user={user} completion={completion} />}
 
         {type === "fpa" && (
           <div className="space-y-6">
@@ -338,7 +341,7 @@ export default async function ApprovalDetailPage({ params, searchParams }: PageP
 }
 
 function ScopeContent({ type, raw, checklist, data, user }: { type: "fpa" | "fpaa"; raw: string | null; checklist: Awaited<ReturnType<typeof checklistItems>>; data: Row; user: CurrentUser }) {
-  if (checklist.length) return <ChecklistPanel items={checklist} type={type} createdBy={data.created_by_user_id} user={user} />;
+  if (checklist.length) return <ChecklistPanel items={checklist} type={type} createdBy={data.created_by_user_id} user={user} locked={data.status_dokumen === "Selesai"} />;
   const items = decodeScopeItems(raw, type === "fpa" ? "fpa_solusi_list" : "fpaa_scope_list");
   if (items) return <ScopeItemList items={items} />;
   return <p className="whitespace-pre-line text-gray-700">{raw}</p>;

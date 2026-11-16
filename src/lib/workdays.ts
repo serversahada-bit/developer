@@ -25,6 +25,15 @@ export function addWorkingDays(date: string, n: number, workdays: number[]): str
   return current;
 }
 
+// Working days after `from` up to and including `to` (0 when `to` is not later).
+export function workingDaysBetween(from: string, to: string, workdays: number[]): number {
+  let count = 0;
+  for (let current = addDays(from, 1); current <= to.slice(0, 10); current = addDays(current, 1)) {
+    if (workdays.includes(weekdayOf(current))) count++;
+  }
+  return count;
+}
+
 // Earliest estimated finish date allowed for an FPA sent on `sentDate`, or null for an unknown scale.
 export function minimumFinishDate(sentDate: string, skala: string, workdays: number[]): string | null {
   const days = SCALE_MIN_WORKDAYS[skala];
@@ -36,6 +45,12 @@ export function minimumFinishDate(sentDate: string, skala: string, workdays: num
 export const DEFAULT_APPROVAL_LIMITS: Record<Stage, number> = { atasan: 2, tim_it: 2, manager_it: 3, manager_fat: 4 };
 export const MIN_APPROVAL_LIMIT = 1;
 export const MAX_APPROVAL_LIMIT = 30;
+
+// After approval (FLOW_APLIKASI.txt section 7), same 1-30 working day range:
+//   test    = the requester's window to test an item once Dev marks it done; then it counts as tested
+//   revisi  = the requester's window to resend an FPA-A sent back for revision; then it is rejected
+export type CompletionLimitKey = "test" | "revisi_fpaa";
+export const DEFAULT_COMPLETION_LIMITS: Record<CompletionLimitKey, number> = { test: 7, revisi_fpaa: 7 };
 
 // When a stage opened at `openedAt` (WIB 'YYYY-MM-DD HH:MM:SS') must be decided: the same clock time
 // `days` working days later. A stage opened on a non-working day counts from 00:00 of the next working

@@ -98,6 +98,12 @@ export async function saveApprovalSubmission(type: DocType, form: FormData, user
   // Read from Absensi outside the transaction; a revision re-reads it, as the supervisor may have changed.
   const atasan = await resolveAtasan(user.id);
   return transaction(async (tx) => {
+    // A finished FPA takes no more addenda: new scope goes in a new FPA. Locked so the FPA cannot
+    // finish while this FPA-A is being saved.
+    if (type === "fpaa") {
+      const parent = await row(tx, "SELECT status_dokumen FROM fpa_submissions WHERE nomor_fpa = ? FOR UPDATE", [data.nomor_fpa_utama]);
+      if (parent?.status_dokumen === "Selesai") throw new UserError(`FPA ${data.nomor_fpa_utama} sudah Selesai, jadi tidak dapat diberi FPA-A lagi. Ajukan FPA baru untuk perubahan ini.`);
+    }
     if (revisionId) {
       const document = await row(tx, `SELECT * FROM ${table} WHERE id = ? FOR UPDATE`, [revisionId]);
       const run = await approvalRun(tx, type, revisionId, true);

@@ -32,11 +32,12 @@ User `ABSEN_DB_USER` cukup diberi `SELECT` pada tabel `karyawan` dan `tim_saya`.
 | `src/lib/session.ts`, `auth.ts` | Cookie sesi JWT (httpOnly), akun aktif, hak akses menu, login. |
 | `src/lib/identity.ts` | **Satu-satunya** pembaca database Absensi (tabel `karyawan`). |
 | `src/lib/approval.ts`, `submission.ts`, `checklist.ts`, `email.ts` | Alur approval FPA/FPA-A, revisi, checklist, antrean email (port 1:1 dari PHP). |
+| `src/lib/completion.ts` | Setelah disetujui: status Selesai, batas pengujian checklist, email harian "item siap dites", batas revisi FPA-A. |
 | `src/lib/users.ts`, `menus.ts` | Manajemen user dan definisi menu. |
 | `src/app/(app)/…` | Halaman dengan sidebar: Projects, Activity Log, My Tasks, Task, Calendar, Reports, Approvals, Users. |
 | `src/app/(portal)/pengajuan/…` | Portal dan form FPA, FPA-A, FPM. |
 | `src/app/sso`, `src/app/login`, `src/app/logout` | Masuk, keluar, dan penerima SSO dari Great. |
-| `src/app/api/cron/approval-emails` | Batas waktu approval + pengiriman ulang antrean email (pengganti `send_approval_emails.php`). |
+| `src/app/api/cron/approval-emails` | Batas waktu approval dan setelah disetujui, status Selesai otomatis, pengiriman ulang antrean email (pengganti `send_approval_emails.php`). |
 
 Semua mutasi memakai Server Actions. Next.js menolak action yang `Origin`-nya berbeda dengan host, sehingga setiap form, termasuk Activity Log dan Projects yang di PHP tidak memakai token CSRF, sekarang terlindungi.
 
@@ -100,7 +101,7 @@ Saat ini akun tetap berada di tabel `users`, karena seluruh foreign key riwayat 
 
 ## Email
 
-Isi `MAIL_*` di `.env.local` dan set `MAIL_ENABLED=true`. Jalankan cron berikut tiap menit. Cron ini memproses batas waktu approval (pengingat, auto-revisi, dan auto-approve), lalu mengirim ulang antrean email:
+Isi `MAIL_*` di `.env.local` dan set `MAIL_ENABLED=true`. Jalankan cron berikut tiap menit. Cron ini memproses batas waktu approval (pengingat, auto-revisi, dan auto-approve), batas waktu setelah disetujui (batas test item, batas revisi FPA-A, email harian "item siap dites", status Selesai), lalu mengirim ulang antrean email:
 
 ```powershell
 curl -X POST -H "Authorization: Bearer $env:CRON_SECRET" http://localhost:3002/api/cron/approval-emails

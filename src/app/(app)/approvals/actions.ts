@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { requireActionUser, UserError } from "@/lib/auth";
 import { activateLegacyApproval, adjustBudget, adjustEstimatedDuration, adjustFinishDate, decideApproval, setFpmEstimate, transitionFpmStatus } from "@/lib/approval";
 import { toggleChecklistItem } from "@/lib/checklist";
+import { completeManually, deliverChecklistEmails } from "@/lib/completion";
 import { isDateString } from "@/lib/dates";
 import { isDocType } from "@/lib/documents";
 import { deliverDocumentApprovalEmail, deliverFpmEmails } from "@/lib/email";
@@ -108,11 +109,26 @@ export async function fpmTransitionAction(form: FormData): Promise<ActionState> 
 }
 
 export async function checklistAction(form: FormData): Promise<ActionState> {
+  let changed: Awaited<ReturnType<typeof toggleChecklistItem>> | null = null;
   return run(async () => {
     const user = await requireActionUser();
     const itemId = positiveInt(form, "item_id");
     if (!itemId) throw new UserError("Parameter tidak valid.");
-    await toggleChecklistItem(str(form, "type"), itemId, str(form, "field"), user, form.has("note") ? str(form, "note") : null);
-    return "Checklist diperbarui.";
+    changed = await toggleChecklistItem(str(form, "type"), itemId, str(form, "field"), user, form.has("note") ? str(form, "note") : null);
+    return changed.message;
+  }, async () => {
+    if (changed) await deliverChecklistEmails(changed.type, changed.documentId);
+  });
+}
+
+// Admin closes an approved document that has no checklist items.
+export async function completeAction(form: FormData): Promise<ActionState> {
+  let target: ReturnType<typeof docTarget> | null = null;
+  return run(async () => {
+    const user = await requireActionUser();
+    target = docTarget(form);
+    return completeManually(target.type, target.id, user);
+  }, async () => {
+    if (target) await deliverChecklistEmails(target.type, target.id);
   });
 }

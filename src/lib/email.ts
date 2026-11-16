@@ -78,7 +78,8 @@ const escapeHtml = (value: string) =>
   value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 
 // Where the document stands when the email is sent.
-function positionLine(run: Row, current: Row | null): string {
+function positionLine(run: Row, current: Row | null, document: Row): string {
+  if (document.status_dokumen === "Selesai") return "Selesai";
   if (run.state === "approved") return "Disetujui final";
   if (run.state === "rejected") return "Ditolak";
   if (run.state === "revision") return "Menunggu revisi pemohon";
@@ -110,10 +111,14 @@ function approvalEmailMessage(job: Row, document: Row, run: Row, current: Row | 
   const requester = document[type === "fpa" ? "nama_pemohon" : "user_nama"];
   const cost = effectiveCost(type, document);
   const isRequester = Number(job.recipient_id) === Number(run.requester_id);
-  const toRevision = (job.event_action === "revision" || job.event_action === "auto_revision") && isRequester && run.state === "revision";
+  const toRevision = ["revision", "auto_revision", "revision_reminder"].includes(job.event_action) && isRequester && run.state === "revision";
   const link = settings.baseUrl + (toRevision ? revisionUrl(type, Number(job.document_id)) : detailUrl(type, Number(job.document_id)));
   const actor = String(job.actor_name ?? "");
   const note = job.event_note ? `\nCatatan: ${job.event_note}` : "";
+  const items = job.event_note ? `\n\n${job.event_note}` : "";
+  // An FPA-A sent back for revision has to be resent in time (FPA has no limit).
+  const revisionDue = toRevision && type === "fpaa" && run.revision_due_at
+    ? `\n\nKirim ulang paling lambat ${formatDeadline(run.revision_due_at)}. Lewat batas itu, FPA-A ini ditolak otomatis.` : "";
 
   let subject: string;
   let intro: string;
@@ -135,7 +140,7 @@ function approvalEmailMessage(job: Row, document: Row, run: Row, current: Row | 
     const info: Record<string, [string, string]> = {
       approve: ["Disetujui, lanjut ke tahap berikutnya", `Pengajuan disetujui oleh ${actor} dan diteruskan ke tahap berikutnya.${note}`],
       approve_final: ["Disetujui final", `Pengajuan disetujui final oleh ${actor}. Project dibuat dan pengerjaan dapat dimulai.${note}`],
-      revision: ["Dikembalikan untuk revisi", `${actor} mengembalikan pengajuan untuk direvisi.${note}${isRequester ? "\n\nSilakan perbaiki lalu kirim ulang. Approval akan dimulai lagi dari tahap pertama." : ""}`],
+      revision: ["Dikembalikan untuk revisi", `${actor} mengembalikan pengajuan untuk direvisi.${note}${isRequester ? "\n\nSilakan perbaiki lalu kirim ulang. Approval akan dimulai lagi dari tahap pertama." : ""}${revisionDue}`],
       reject: ["Ditolak", `${actor} menolak pengajuan.${note}`],
       adjust_budget: ["Budget diubah", `${actor} mengubah budget pengajuan.${note}`],
       adjust_finish_date: ["Estimasi tanggal selesai diubah", `${actor} mengubah estimasi tanggal selesai pengajuan.${job.event_note ? `\nPerubahan: ${job.event_note}` : ""}`],
@@ -143,7 +148,14 @@ function approvalEmailMessage(job: Row, document: Row, run: Row, current: Row | 
       // Decisions the system made because a stage's time limit passed; the note names the stage.
       auto_approve: ["Disetujui otomatis, lanjut ke tahap berikutnya", `${job.event_note ?? ""} Pengajuan diteruskan ke tahap berikutnya.`],
       auto_approve_final: ["Disetujui final (otomatis)", `${job.event_note ?? ""} Pengajuan disetujui final. Project dibuat dan pengerjaan dapat dimulai.`],
-      auto_revision: ["Dikembalikan otomatis untuk revisi", `${job.event_note ?? ""} Pengajuan dikembalikan kepada pemohon untuk direvisi.${isRequester ? "\n\nSilakan hubungi atasan Anda, lalu kirim ulang pengajuan. Approval akan dimulai lagi dari tahap pertama." : ""}`],
+      auto_revision: ["Dikembalikan otomatis untuk revisi", `${job.event_note ?? ""} Pengajuan dikembalikan kepada pemohon untuk direvisi.${isRequester ? "\n\nSilakan hubungi atasan Anda, lalu kirim ulang pengajuan. Approval akan dimulai lagi dari tahap pertama." : ""}${revisionDue}`],
+      revision_reminder: ["Pengingat: batas kirim revisi", `Pengajuan FPA-A ini masih menunggu revisi dari Anda.\n${job.event_note ?? ""}`],
+      auto_reject: ["Ditolak otomatis", `${job.event_note ?? ""} Jika perubahan ini masih diperlukan, ajukan FPA-A baru.`],
+      // After final approval (FLOW_APLIKASI.txt section 7).
+      complete: ["Selesai", `Pengajuan dinyatakan selesai.${note}${job.actor_id ? `\nDicatat dari tindakan: ${actor}` : ""}`],
+      checklist_ready: ["Item siap Anda test", `Developer sudah menyelesaikan item berikut. Silakan coba, lalu tandai Oke atau Belum Sesuai di halaman pengajuan.${items}\n\nItem yang tidak direspons sampai batasnya dianggap sudah ditest.`],
+      checklist_reminder: ["Pengingat: batas test item", `Item berikut belum Anda test dan batasnya tinggal 1 hari kerja. Lewat batas, item dianggap sudah ditest.${items}`],
+      checklist_reject: ["Item belum sesuai", `${actor} (pemohon) menandai item belum sesuai. Item kembali ke Developer.${items}`],
     };
     const [title, body] = info[job.event_action] ?? ["Pembaruan pengajuan", `Ada pembaruan pada pengajuan ini oleh ${actor}.${note}`];
     subject = `[${typeLabel}] ${title} - ${subjectNumber}`;
@@ -157,7 +169,7 @@ function approvalEmailMessage(job: Row, document: Row, run: Row, current: Row | 
     `Pemohon: ${requester}`,
     `Departemen: ${document.departemen}`,
     `Biaya: ${cost > 0 ? rupiah(cost) : "Tanpa biaya"}`,
-    `Posisi saat ini: ${positionLine(run, current)}`,
+    `Posisi saat ini: ${positionLine(run, current, document)}`,
   ].join("\n");
   const text = `Halo ${job.full_name},\n\n${intro}\n\n${details}\n\nLihat pengajuan: ${link}\n\nSilakan login dengan akun Anda untuk membaca detail${job.kind === "turn" ? " dan mengambil keputusan" : ""}. Jika pengajuan sudah diproses, halaman akan menampilkan status terbaru.`;
   return mailMessage(subject, text, link, button);
@@ -270,14 +282,14 @@ const batchSize = (limit: number) => Math.max(1, Math.min(100, limit));
 export function dispatchApprovalEmails(limit = 10, runId: number | null = null, settings = mailSettings(), sender: MailSender = smtpSender) {
   return drainQueue("approval_email_queue", settings, async (conn, result) => {
     const jobs = await rows(conn, `SELECT q.*, r.document_type, r.document_id, u.full_name, u.email,
-        e.action AS event_action, e.note AS event_note, e.actor_name
+        e.action AS event_action, e.note AS event_note, e.actor_name, e.actor_id
       FROM approval_email_queue q JOIN approval_runs r ON r.id = q.run_id JOIN users u ON u.id = q.recipient_id
       LEFT JOIN approval_events e ON e.id = q.event_id
       WHERE q.status = 'pending' AND q.next_attempt_at <= NOW()${runId !== null ? " AND q.run_id = ?" : ""}
       ORDER BY q.id LIMIT ${batchSize(limit)}`, runId !== null ? [runId] : []);
     for (const job of jobs) {
       // Refresh the turn immediately before sending; skip decision requests left over from an older turn.
-      const run = await row(conn, "SELECT state, cycle, current_position, requester_id FROM approval_runs WHERE id = ?", [job.run_id]);
+      const run = await row(conn, "SELECT state, cycle, current_position, requester_id, revision_due_at FROM approval_runs WHERE id = ?", [job.run_id]);
       const current = run ? await row(conn, "SELECT stage, approver_id, approver_name, state, due_at FROM approval_steps WHERE run_id = ? AND cycle = ? AND position = ?", [job.run_id, run.cycle, run.current_position]) : null;
       const staleTurn = job.kind === "turn" && (!run || run.state !== "pending" || Number(run.cycle) !== Number(job.cycle) || Number(run.current_position) !== Number(job.position) || current?.state !== "waiting");
       if (!run || staleTurn) {

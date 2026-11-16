@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, ChevronRight, Eye, Flag, GitBranch, History, Hourglass, User } from "lucide-react";
 import { canUseMenu, requireUser, type CurrentUser } from "@/lib/auth";
@@ -6,17 +7,18 @@ import { approvalList } from "@/lib/approval";
 import { checklistItems, checklistProgress, type ChecklistItem } from "@/lib/checklist";
 import { db, rows, type Row } from "@/lib/db";
 import { daysUntil, formatDate } from "@/lib/dates";
-import { computeTaskDeadline, fpaDeadline, fpmDeadline } from "@/lib/deadlines";
+import { computeTaskDeadline, documentLateDays, fpaCalendarDeadline, fpaDeadline, fpmDeadline } from "@/lib/deadlines";
 import { detailUrl, type DocType } from "@/lib/documents";
 import { workingDays } from "@/lib/settings";
 import { ChecklistPanel } from "@/components/ChecklistPanel";
-import { AccessDenied, ConfidentialBadge, DeadlineBadge, EmptyState, FpmCompletionBadge, PageHeader, UrgencyBadge } from "@/components/ui";
+import { AccessDenied, CompletionBadge, ConfidentialBadge, DeadlineBadge, EmptyState, FpmCompletionBadge, PageHeader, UrgencyBadge } from "@/components/ui";
 import Tabs from "@/components/Tabs";
 
 export const metadata: Metadata = { title: "Task" };
 
-// Documents still running (not rejected or draft).
+// Documents still running (not rejected or draft); finished ones (Selesai) are listed as history.
 const ACTIVE_STATUSES = ["Diajukan", "Diverifikasi", "Disetujui", "Revisi"];
+const BOARD_STATUSES = [...ACTIVE_STATUSES, "Selesai"];
 
 interface Task {
   type: DocType;
@@ -33,6 +35,10 @@ interface Task {
   deadline: string | null;
   daysRemaining: number | null;
   createdAt: string;
+  // Selesai: the day it finished and how late that was against the deadline.
+  finishedAt: string | null;
+  lateDays: number | null;
+  lateUnit: string;
   detailUrl: string;
   restricted: boolean;
   document: Row;
@@ -51,12 +57,12 @@ function sortByDeadline(list: Task[]) {
   });
 }
 
-async function loadTasks(user: CurrentUser): Promise<Task[]> {
+async function loadTasks(user: CurrentUser): Promise<{ active: Task[]; finished: Task[] }> {
   // Approved addenda push out their parent FPA's deadline by their own extra time.
   const extensionDays = new Map<string, number>();
   const extensionSources = new Map<string, string[]>();
   const extensions = await rows(db, `SELECT nomor_fpa_utama, nomor_fpa_a, COALESCE(tambahan_waktu_admin, tambahan_waktu) AS effective_waktu FROM fpa_a_submissions
-    WHERE status_dokumen = 'Disetujui' AND nomor_fpa_utama IS NOT NULL AND COALESCE(tambahan_waktu_admin, tambahan_waktu) > 0`);
+    WHERE status_dokumen IN ('Disetujui', 'Selesai') AND nomor_fpa_utama IS NOT NULL AND COALESCE(tambahan_waktu_admin, tambahan_waktu) > 0`);
   for (const ext of extensions) {
     const days = Number(ext.effective_waktu);
     extensionDays.set(ext.nomor_fpa_utama, (extensionDays.get(ext.nomor_fpa_utama) ?? 0) + days);
@@ -75,17 +81,23 @@ async function loadTasks(user: CurrentUser): Promise<Task[]> {
   // FPA-A has no "rahasia" flag of its own; it inherits its parent FPA's, looked up by nomor_fpa.
   const fpaRahasia = new Map((await rows(db, "SELECT nomor_fpa, rahasia FROM fpa_submissions")).map((r) => [r.nomor_fpa, Boolean(r.rahasia)]));
 
-  const decorate = async (task: Omit<Task, "daysRemaining" | "checklist" | "checklistDone" | "checklistTotal">): Promise<Task> => {
+  const workdays = await workingDays();
+  // `calendar`: an old FPA whose deadline counts calendar days, so its lateness does too.
+  const decorate = async (task: Omit<Task, "daysRemaining" | "checklist" | "checklistDone" | "checklistTotal" | "finishedAt" | "lateDays" | "lateUnit">, calendar = false): Promise<Task> => {
     const checklist = !task.restricted && task.status === "Disetujui" ? await checklistItems(task.type, Number(task.document.id)) : [];
     const [done, total] = checklistProgress(checklist);
-    return { ...task, daysRemaining: task.deadline ? daysUntil(task.deadline) : null, checklist, checklistDone: done, checklistTotal: total };
+    const finishedAt = task.status === "Selesai" ? task.document.tanggal_selesai ?? null : null;
+    return {
+      ...task, daysRemaining: task.deadline ? daysUntil(task.deadline) : null, checklist, checklistDone: done, checklistTotal: total,
+      finishedAt, lateDays: documentLateDays(task.deadline, finishedAt, calendar ? null : workdays), lateUnit: calendar ? "hari" : "hari kerja",
+    };
   };
 
-  const workdays = await workingDays();
-  const tasks: Task[] = [];
+  const active: Task[] = [];
+  const finished: Task[] = [];
   const fpaIndex = new Map<string, Task>();
   for (const doc of await approvalList("fpa", user, "board")) {
-    if (!ACTIVE_STATUSES.includes(doc.status_dokumen)) continue;
+    if (!BOARD_STATUSES.includes(doc.status_dokumen)) continue;
     const extra = extensionDays.get(doc.nomor_fpa) ?? 0;
     const task = await decorate({
       type: "fpa", typeLabel: "FPA", number: doc.nomor_fpa, title: doc.nama_aplikasi, requester: doc.nama_pemohon, department: doc.departemen,
@@ -93,15 +105,16 @@ async function loadTasks(user: CurrentUser): Promise<Task[]> {
       extensionSources: extensionSources.get(doc.nomor_fpa) ?? [], deadline: fpaDeadline(doc as Parameters<typeof fpaDeadline>[0], extra, workdays),
       createdAt: doc.created_at, detailUrl: detailUrl("fpa", Number(doc.id), "tasks"),
       restricted: Boolean(doc.rahasia) && !canSeeConfidential(doc, "fpa"), document: doc, children: [],
-    });
-    tasks.push(task);
+    }, fpaCalendarDeadline(doc as Parameters<typeof fpaCalendarDeadline>[0]));
+    (task.status === "Selesai" ? finished : active).push(task);
     fpaIndex.set(doc.nomor_fpa, task);
   }
 
-  // Addenda nest under their parent FPA's card when a match is found; orphaned references
-  // (parent not in this active list, or a mistyped nomor_fpa_utama) stay as standalone cards.
+  // Addenda nest under their parent FPA's card when a match is found (a finished one stays, dimmed,
+  // under a parent still running); orphaned references (parent not on the board, or a mistyped
+  // nomor_fpa_utama) stay as standalone cards.
   for (const doc of await approvalList("fpaa", user, "board")) {
-    if (!ACTIVE_STATUSES.includes(doc.status_dokumen)) continue;
+    if (!BOARD_STATUSES.includes(doc.status_dokumen)) continue;
     const waktu = doc.tambahan_waktu_admin ?? doc.tambahan_waktu;
     const task = await decorate({
       type: "fpaa", typeLabel: "FPA-A", number: doc.nomor_fpa_a || "Draft", title: doc.nama_proyek, requester: doc.user_nama, department: doc.departemen,
@@ -111,14 +124,43 @@ async function loadTasks(user: CurrentUser): Promise<Task[]> {
       restricted: (fpaRahasia.get(doc.nomor_fpa_utama) ?? false) && !canSeeConfidential(doc, "fpaa"), document: doc, children: [],
     });
     const parent = doc.nomor_fpa_utama !== null ? fpaIndex.get(doc.nomor_fpa_utama) : undefined;
-    if (parent) parent.children.push(task);
-    else tasks.push(task);
+    if (parent && (parent.status !== "Selesai" || task.status === "Selesai")) parent.children.push(task);
+    else (task.status === "Selesai" ? finished : active).push(task);
   }
 
   // Top-level order follows each FPA's own deadline; nested FPA-A no longer compete for position.
-  sortByDeadline(tasks);
-  for (const task of tasks) sortByDeadline(task.children);
-  return tasks;
+  // History shows the most recently finished first.
+  sortByDeadline(active);
+  for (const task of [...active, ...finished]) sortByDeadline(task.children);
+  finished.sort((a, b) => (b.finishedAt ?? "").localeCompare(a.finishedAt ?? "") || b.createdAt.localeCompare(a.createdAt));
+  return { active, finished };
+}
+
+// Finish date and lateness of a Selesai document, in place of the countdown.
+function FinishedInfo({ task }: { task: Task }) {
+  return (
+    <>
+      <div className="flex items-center gap-1 text-sm font-semibold text-gray-700 lg:justify-end">
+        <Flag className="h-2.5 w-2.5 opacity-60" aria-hidden="true" />Selesai {task.finishedAt ? formatDate(task.finishedAt, "d M Y") : "-"}
+      </div>
+      {task.deadline && <div className="mt-1 text-[11px] text-gray-500">Deadline {formatDate(task.deadline, "d M Y")}</div>}
+      <div className="mt-1"><CompletionBadge lateDays={task.lateDays} unit={task.lateUnit} /></div>
+    </>
+  );
+}
+
+// Finished documents, collapsed below the running ones.
+function HistorySection({ count, children }: { count: number; children: ReactNode }) {
+  return (
+    <details className="group mt-8">
+      <summary className="flex cursor-pointer select-none list-none items-center gap-2 border-b border-gray-200 py-2 text-sm font-semibold text-gray-600 hover:text-gray-800 [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="h-3 w-3 text-gray-400 transition-transform group-open:rotate-90" aria-hidden="true" />
+        Riwayat &middot; Sudah Selesai
+        <span className="rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-600">{count}</span>
+      </summary>
+      <div className="mt-4 space-y-3">{children}</div>
+    </details>
+  );
 }
 
 function TaskCard({ task, user, nested = false }: { task: Task; user: CurrentUser; nested?: boolean }) {
@@ -135,17 +177,23 @@ function TaskCard({ task, user, nested = false }: { task: Task; user: CurrentUse
             <p className="mt-2 text-xs text-gray-400">Dibuat {formatDate(task.createdAt, "d M Y")} &middot; detail hanya terlihat oleh pemohon, approver di jalurnya, dan Admin</p>
           </div>
           <div className="shrink-0 text-left lg:text-right">
-            <div className="text-sm font-semibold text-gray-700">{task.deadline ? formatDate(task.deadline, "d M Y") : "-"}</div>
-            <div className="mt-1"><UrgencyBadge daysRemaining={task.daysRemaining} /></div>
+            {task.status === "Selesai" ? <FinishedInfo task={task} /> : (
+              <>
+                <div className="text-sm font-semibold text-gray-700">{task.deadline ? formatDate(task.deadline, "d M Y") : "-"}</div>
+                <div className="mt-1"><UrgencyBadge daysRemaining={task.daysRemaining} /></div>
+              </>
+            )}
           </div>
         </div>
       </div>
     );
   }
   const isFpa = task.type === "fpa";
+  const finished = task.status === "Selesai";
+  const accent = finished ? (isFpa ? "border-l-indigo-200" : "border-l-purple-200") : isFpa ? "border-l-indigo-500" : "border-l-purple-500";
   return (
-    <div className={`overflow-hidden rounded-xl border border-l-4 border-gray-200 bg-white ${isFpa ? "border-l-indigo-500" : "border-l-purple-500"} ${nested ? "" : "shadow-sm"}`}>
-      <div className={`flex flex-col justify-between gap-4 p-4 sm:p-5 lg:flex-row lg:items-start ${isFpa ? "bg-indigo-50/40" : "bg-purple-50/40"}`}>
+    <div className={`overflow-hidden rounded-xl border border-l-4 border-gray-200 bg-white ${accent} ${nested || finished ? "" : "shadow-sm"} ${finished && nested ? "opacity-75" : ""}`}>
+      <div className={`flex flex-col justify-between gap-4 p-4 sm:p-5 lg:flex-row lg:items-start ${finished ? "bg-gray-50" : isFpa ? "bg-indigo-50/40" : "bg-purple-50/40"}`}>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className={`rounded-md border px-2.5 py-1 text-xs font-bold ${isFpa ? "border-indigo-200 bg-indigo-50 text-indigo-700" : "border-purple-200 bg-purple-50 text-purple-700"}`}>{task.typeLabel}</span>
@@ -166,8 +214,12 @@ function TaskCard({ task, user, nested = false }: { task: Task; user: CurrentUse
         </div>
         <div className="flex shrink-0 items-center justify-between gap-4 lg:justify-end">
           <div className="text-left lg:text-right">
-            <div className="text-sm font-semibold text-gray-700">{task.deadline ? formatDate(task.deadline, "d M Y") : "-"}</div>
-            <div className="mt-1"><UrgencyBadge daysRemaining={task.daysRemaining} /></div>
+            {finished ? <FinishedInfo task={task} /> : (
+              <>
+                <div className="text-sm font-semibold text-gray-700">{task.deadline ? formatDate(task.deadline, "d M Y") : "-"}</div>
+                <div className="mt-1"><UrgencyBadge daysRemaining={task.daysRemaining} /></div>
+              </>
+            )}
             {task.extensionDays > 0 && (
               <div className="mt-1 flex items-center gap-1 text-[10px] text-purple-600 lg:justify-end" title={task.extensionSources.join(", ")}>
                 <History className="h-2.5 w-2.5" aria-hidden="true" />+{task.extensionDays} hari dari FPA-A
@@ -185,7 +237,7 @@ function TaskCard({ task, user, nested = false }: { task: Task; user: CurrentUse
         </div>
       )}
       {task.children.length > 0 && (
-        <div className="space-y-3 border-t border-gray-100 bg-purple-50/30 p-4 sm:p-5">
+        <div className={`space-y-3 border-t border-gray-100 p-4 sm:p-5 ${finished ? "bg-gray-50" : "bg-purple-50/30"}`}>
           <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-purple-700">
             <GitBranch className="h-2.5 w-2.5" aria-hidden="true" /> Addendum (FPA-A) &middot; {task.children.length}
           </div>
@@ -197,7 +249,7 @@ function TaskCard({ task, user, nested = false }: { task: Task; user: CurrentUse
 }
 
 function TaskStatusBadge({ status }: { status: string }) {
-  const style = { Diajukan: "bg-yellow-100 text-yellow-800", Diverifikasi: "bg-blue-100 text-blue-800", Disetujui: "bg-green-100 text-green-800", Revisi: "bg-purple-100 text-purple-800", Open: "bg-yellow-100 text-yellow-800", "In Progress": "bg-blue-100 text-blue-800", Closed: "bg-green-100 text-green-800" }[status] ?? "bg-gray-100 text-gray-800";
+  const style = { Diajukan: "bg-yellow-100 text-yellow-800", Diverifikasi: "bg-blue-100 text-blue-800", Disetujui: "bg-green-100 text-green-800", Revisi: "bg-purple-100 text-purple-800", Selesai: "bg-emerald-600 text-white", Open: "bg-yellow-100 text-yellow-800", "In Progress": "bg-blue-100 text-blue-800", Closed: "bg-green-100 text-green-800" }[status] ?? "bg-gray-100 text-gray-800";
   return <span className={`inline-flex rounded-full px-2 text-[10px] font-semibold leading-5 ${style}`}>{status}</span>;
 }
 
@@ -263,13 +315,14 @@ export default async function TasksPage() {
   const user = await requireUser("/tasks");
   if (!canUseMenu(user, "tasks")) return <AccessDenied user={user} />;
 
-  const [tasks, fpmActive, fpmHistory] = await Promise.all([
+  const [{ active: tasks, finished: finishedTasks }, fpmActive, fpmHistory] = await Promise.all([
     loadTasks(user),
     rows(db, "SELECT * FROM fpm_submissions WHERE status_dokumen IN ('Open', 'In Progress') ORDER BY created_at DESC"),
     // Closed reports stay listed as history, most recently finished first (older ones without a close date last).
     rows(db, "SELECT * FROM fpm_submissions WHERE status_dokumen = 'Closed' ORDER BY tanggal_selesai IS NULL, tanggal_selesai DESC, created_at DESC"),
   ]);
-  const taskCount = tasks.reduce((sum, task) => sum + 1 + task.children.length, 0);
+  // Running documents only: a finished FPA-A still nested under its running parent is not counted.
+  const taskCount = tasks.reduce((sum, task) => sum + 1 + task.children.filter((child) => child.status !== "Selesai").length, 0);
 
   return (
     <>
@@ -284,10 +337,15 @@ export default async function TasksPage() {
             {
               id: "fpafpaa",
               label: <>FPA &amp; FPA-A <span className="ml-1.5 rounded-full border border-indigo-100 bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">{taskCount}</span></>,
-              panel: tasks.length === 0 ? (
-                <EmptyState><CheckCircle2 className="mx-auto mb-3 h-10 w-10 text-green-300" aria-hidden="true" />Tidak ada task FPA/FPA-A yang sedang berjalan.</EmptyState>
-              ) : (
-                <div className="space-y-4">{tasks.map((task) => <TaskCard key={task.detailUrl} task={task} user={user} />)}</div>
+              panel: (
+                <>
+                  {tasks.length === 0 ? (
+                    <EmptyState><CheckCircle2 className="mx-auto mb-3 h-10 w-10 text-green-300" aria-hidden="true" />Tidak ada task FPA/FPA-A yang sedang berjalan.</EmptyState>
+                  ) : (
+                    <div className="space-y-4">{tasks.map((task) => <TaskCard key={task.detailUrl} task={task} user={user} />)}</div>
+                  )}
+                  {finishedTasks.length > 0 && <HistorySection count={finishedTasks.length}>{finishedTasks.map((task) => <TaskCard key={task.detailUrl} task={task} user={user} />)}</HistorySection>}
+                </>
               ),
             },
             {

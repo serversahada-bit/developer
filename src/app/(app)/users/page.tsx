@@ -8,12 +8,12 @@ import { formatDate } from "@/lib/dates";
 import { karyawanInactive, loadKaryawan, type Karyawan } from "@/lib/identity";
 import { MANAGER_MENUS, MANAGER_ROLE_LABEL, MANAGER_ROLES, NON_ADMIN_MENUS, menuByKey } from "@/lib/menus";
 import { STAGE_LABEL, STAGES } from "@/lib/documents";
-import { approvalLimits, workingDays } from "@/lib/settings";
+import { approvalLimits, completionLimits, workingDays } from "@/lib/settings";
 import { listUsers } from "@/lib/users";
 import { MAX_APPROVAL_LIMIT, MIN_APPROVAL_LIMIT, WEEKDAY_LABELS } from "@/lib/workdays";
 import ActionForm, { SubmitButton } from "@/components/ActionForm";
 import { Notice } from "@/components/ui";
-import { deleteUserAction, saveApprovalLimitsAction, saveManagerRolesAction, saveWorkingDaysAction } from "./actions";
+import { deleteUserAction, saveApprovalLimitsAction, saveCompletionLimitsAction, saveManagerRolesAction, saveWorkingDaysAction } from "./actions";
 import UserForm, { type KaryawanOption, type UserFormValues } from "./UserForm";
 
 export const metadata: Metadata = { title: "Users" };
@@ -25,6 +25,7 @@ const SAVED: Record<string, string> = {
   roles: "Manager IT dan Manager FAT disimpan. Dokumen yang sedang menunggu peran tersebut dialihkan ke akun baru.",
   workdays: "Hari kerja disimpan.",
   limits: "Batas waktu approval disimpan. Berlaku untuk tahap yang dibuka setelah ini; dokumen yang sedang menunggu tetap memakai batas sebelumnya.",
+  completion: "Batas waktu pengujian dan revisi disimpan. Berlaku untuk item dan revisi yang dimulai setelah ini; yang sedang berjalan tetap memakai batas sebelumnya.",
 };
 
 const LIMIT_RESULT: Record<string, string> = {
@@ -67,6 +68,7 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
   const managerIds = new Set(Object.values(holders).map((holder) => holder.id));
   const workdays = await workingDays();
   const limits = await approvalLimits();
+  const afterApproval = await completionLimits();
 
   const editing = editId ? users.find((u) => u.id === editId) : undefined;
   const deleting = deleteId ? users.find((u) => u.id === deleteId) : undefined;
@@ -177,6 +179,40 @@ export default async function UsersPage({ searchParams }: PageProps<"/users">) {
                       <td className={`py-2 pr-4 ${stage === "atasan" ? "text-amber-700" : "text-gray-600"}`}>{LIMIT_RESULT[stage]}</td>
                     </tr>
                   ))}
+                </tbody>
+              </table>
+            </div>
+            <SubmitButton className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60">Simpan</SubmitButton>
+          </ActionForm>
+        </section>
+
+        <section id="batas-pengujian" className="rounded-xl border border-gray-200 bg-white p-5 md:p-6">
+          <h2 className="text-lg font-bold text-gray-900">Batas Waktu Setelah Disetujui</h2>
+          <p className="mb-5 mt-1 text-sm text-gray-500">
+            Dalam hari kerja ({MIN_APPROVAL_LIMIT}-{MAX_APPROVAL_LIMIT}), sampai jam yang sama. Pengingat ke pemohon dikirim 1 hari kerja sebelum batas.
+            Perubahan berlaku untuk item dan revisi yang dimulai setelah disimpan.
+          </p>
+          <ActionForm action={saveCompletionLimitsAction} className="space-y-4">
+            <div className="overflow-x-auto">
+              <table className="w-full max-w-2xl text-left text-sm">
+                <thead className="text-gray-500">
+                  <tr>{["Batas", "Hari kerja", "Kalau lewat batas"].map((h) => <th key={h} scope="col" className="whitespace-nowrap py-2 pr-4">{h}</th>)}</tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  <tr>
+                    <td className="py-2 pr-4 font-medium text-gray-900"><label htmlFor="batas-test">Pemohon menguji item (sejak Dev dicentang)</label></td>
+                    <td className="py-2 pr-4">
+                      <input type="number" id="batas-test" name="batas_test" required min={MIN_APPROVAL_LIMIT} max={MAX_APPROVAL_LIMIT} step={1} defaultValue={afterApproval.test} className="w-20 rounded-lg border border-gray-300 px-3 py-1.5" />
+                    </td>
+                    <td className="py-2 pr-4 text-gray-600">Item dianggap sudah ditest</td>
+                  </tr>
+                  <tr>
+                    <td className="py-2 pr-4 font-medium text-gray-900"><label htmlFor="batas-revisi-fpaa">Pemohon mengirim ulang revisi FPA-A</label></td>
+                    <td className="py-2 pr-4">
+                      <input type="number" id="batas-revisi-fpaa" name="batas_revisi_fpaa" required min={MIN_APPROVAL_LIMIT} max={MAX_APPROVAL_LIMIT} step={1} defaultValue={afterApproval.revisi_fpaa} className="w-20 rounded-lg border border-gray-300 px-3 py-1.5" />
+                    </td>
+                    <td className="py-2 pr-4 text-red-700">FPA-A ditolak otomatis</td>
+                  </tr>
                 </tbody>
               </table>
             </div>

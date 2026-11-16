@@ -8,11 +8,12 @@ import ActionForm, { SubmitButton } from "./ActionForm";
 import { ChecklistDeadlineBadge } from "./ui";
 import { checklistAction } from "@/app/(app)/approvals/actions";
 
-// Solusi / Fitur-Scope list of an approved document, with Dev and requester test checkboxes.
-export function ChecklistPanel({ items, type, createdBy, user }: { items: ChecklistItem[]; type: DocType; createdBy: number | null; user: CurrentUser }) {
+// Solusi / Fitur-Scope list of an approved document, with Dev and requester test checkboxes. A
+// finished (Selesai) document shows it read-only.
+export function ChecklistPanel({ items, type, createdBy, user, locked = false }: { items: ChecklistItem[]; type: DocType; createdBy: number | null; user: CurrentUser; locked?: boolean }) {
   if (items.length === 0) return <p className="text-sm text-gray-500">Belum ada item.</p>;
-  const isRequester = Number(createdBy ?? 0) === user.id;
-  const isAdmin = user.role === "Admin";
+  const isRequester = !locked && Number(createdBy ?? 0) === user.id;
+  const isAdmin = !locked && user.role === "Admin";
   return (
     <div className="space-y-2">
       {items.map((item) => {
@@ -30,7 +31,7 @@ export function ChecklistPanel({ items, type, createdBy, user }: { items: Checkl
                 <input type="hidden" name="type" value={type} />
                 <input type="hidden" name="item_id" value={item.id} />
                 <input type="hidden" name="field" value="dev" />
-                <SubmitButton disabled={!isAdmin} title={isAdmin ? (devDone ? "Batalkan tanda selesai" : "Tandai selesai dikerjakan") : "Hanya Admin yang dapat mengubah ini"}
+                <SubmitButton disabled={!isAdmin} title={locked ? "Pengajuan sudah Selesai" : isAdmin ? (devDone ? "Batalkan tanda selesai" : "Tandai selesai dikerjakan") : "Hanya Admin yang dapat mengubah ini"}
                   aria-label={`Dev selesai: ${item.item_text}`} aria-pressed={devDone}
                   className={`flex h-5 w-5 items-center justify-center rounded border-2 transition-colors ${devDone ? "border-indigo-600 bg-indigo-600 text-white" : "border-gray-300 text-transparent"} ${isAdmin ? "cursor-pointer hover:border-indigo-400" : "cursor-not-allowed opacity-40"}`}>
                   <Check className="h-3 w-3" aria-hidden="true" />
@@ -51,11 +52,11 @@ export function ChecklistPanel({ items, type, createdBy, user }: { items: Checkl
                 <span className="text-xs text-gray-400">Menunggu Developer menyelesaikan item ini</span>
               ) : completed ? (
                 <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700">
-                  <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" /> Selesai &middot; {item.user_tested_by ? `ditest ${item.user_tested_by_name}` : "otomatis setelah 7 hari tanpa respons"}
+                  <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" /> Selesai &middot; {item.user_tested_by ? `ditest ${item.user_tested_by_name}` : `otomatis setelah ${item.test_due_days ? `${item.test_due_days} hari kerja` : "batas waktu"} tanpa respons`}
                 </span>
               ) : (
                 <>
-                  {item.dev_done_at && <ChecklistDeadlineBadge devDoneAt={item.dev_done_at} />}
+                  {item.test_due_at && <ChecklistDeadlineBadge dueAt={item.test_due_at} />}
                   {canReview ? (
                     <>
                       <ActionForm action={checklistAction} messagePosition="none" className="inline">

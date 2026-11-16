@@ -1,10 +1,11 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, Lock } from "lucide-react";
-import { daysLeftUntil, daysUntil, formatDate, parseWib, wibDateTime } from "@/lib/dates";
+import { addDays, daysUntil } from "@/lib/dates";
 import { fpmLateDays } from "@/lib/deadlines";
 import { userHomeMenu, type CurrentUser } from "@/lib/auth";
 import { STAFF_FPA_NOTICE } from "@/lib/menus";
+import { formatDeadline } from "@/lib/workdays";
 
 // Presentational pieces shared by several pages (server components).
 
@@ -40,6 +41,7 @@ export function Notice({ tone = "success", children }: { tone?: "success" | "err
 
 const DOCUMENT_STATUS: Record<string, string> = {
   disetujui: "bg-green-100 text-green-800 border-green-200",
+  selesai: "bg-emerald-600 text-white border-emerald-700",
   closed: "bg-green-100 text-green-800 border-green-200",
   ditolak: "bg-red-100 text-red-800 border-red-200",
   diajukan: "bg-yellow-100 text-yellow-800 border-yellow-200",
@@ -78,9 +80,13 @@ export function DeadlineBadge({ deadline }: { deadline: string | null }) {
 
 // Closed FPM: finished on time or N days late; nothing when there was no deadline to compare.
 export function FpmCompletionBadge({ fpm }: { fpm: { estimasi_durasi: number | null; diproses_at: string | null; tanggal_selesai: string | null } }) {
-  const lateDays = fpmLateDays(fpm);
+  return <CompletionBadge lateDays={fpmLateDays(fpm)} />;
+}
+
+// A finished document against its deadline; `unit` names the kind of days counted.
+export function CompletionBadge({ lateDays, unit = "hari" }: { lateDays: number | null; unit?: string }) {
   if (lateDays === null) return null;
-  if (lateDays > 0) return <span className="rounded border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700">Terlambat {lateDays} hari</span>;
+  if (lateDays > 0) return <span className="rounded border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700">Terlambat {lateDays} {unit}</span>;
   return (
     <span className="inline-flex items-center gap-1 rounded border border-emerald-100 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
       <CheckCircle2 className="h-2.5 w-2.5" aria-hidden="true" />
@@ -89,17 +95,16 @@ export function FpmCompletionBadge({ fpm }: { fpm: { estimasi_durasi: number | n
   );
 }
 
-// How much of the 7-day review window (since Dev marked an item done) remains.
-export function ChecklistDeadlineBadge({ devDoneAt }: { devDoneAt: string }) {
-  const deadline = parseWib(devDoneAt) + 7 * 86_400_000;
-  const daysLeft = daysLeftUntil(deadline);
-  const label = formatDate(wibDateTime(deadline), "d M Y H:i");
+// How much of the requester's test window (fixed when Dev marked the item) remains.
+export function ChecklistDeadlineBadge({ dueAt }: { dueAt: string }) {
+  // A limit at 00:00 is the end of the day before (as formatDeadline shows it).
+  const daysLeft = daysUntil(dueAt.slice(11, 16) === "00:00" ? addDays(dueAt, -1) : dueAt.slice(0, 10));
   let text: string;
   let style: string;
-  if (daysLeft <= 0) {
+  if (daysLeft < 0) {
     text = "Batas test terlewati";
     style = "border-red-200 bg-red-50 text-red-700";
-  } else if (daysLeft === 1) {
+  } else if (daysLeft === 0) {
     text = "Batas test hari ini";
     style = "border-orange-200 bg-orange-50 text-orange-700";
   } else {
@@ -107,7 +112,7 @@ export function ChecklistDeadlineBadge({ devDoneAt }: { devDoneAt: string }) {
     style = daysLeft <= 2 ? "border-orange-200 bg-orange-50 text-orange-700" : "border-blue-200 bg-blue-50 text-blue-700";
   }
   return (
-    <span className={`rounded border px-2 py-0.5 text-[10px] font-semibold ${style}`} title={`Batas hingga ${label}`}>
+    <span className={`rounded border px-2 py-0.5 text-[10px] font-semibold ${style}`} title={`Batas hingga ${formatDeadline(dueAt)}`}>
       {text}
     </span>
   );

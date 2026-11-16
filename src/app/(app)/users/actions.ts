@@ -7,7 +7,7 @@ import { saveManagerRoles } from "@/lib/approval";
 import { positiveInt, str, strs, type ActionState } from "@/lib/form";
 import { loadKaryawan, type Karyawan } from "@/lib/identity";
 import { STAGES, type Stage } from "@/lib/documents";
-import { saveApprovalLimits, saveWorkingDays } from "@/lib/settings";
+import { saveApprovalLimits, saveCompletionLimits, saveWorkingDays } from "@/lib/settings";
 import { createUser, deleteUser, updateUser } from "@/lib/users";
 
 async function requireAdmin() {
@@ -107,4 +107,20 @@ export async function saveApprovalLimitsAction(form: FormData): Promise<ActionSt
   }
   revalidatePath("/users");
   redirect("/users?saved=limits#batas-approval");
+}
+
+export async function saveCompletionLimitsAction(form: FormData): Promise<ActionState> {
+  try {
+    const admin = await requireAdmin();
+    // Anything that is not a small whole number is rejected by saveCompletionLimits as 0.
+    const value = (key: string) => {
+      const raw = str(form, key).trim();
+      return /^\d{1,2}$/.test(raw) ? Number(raw) : 0;
+    };
+    await saveCompletionLimits({ test: value("batas_test"), revisi_fpaa: value("batas_revisi_fpaa") }, admin);
+  } catch (error) {
+    return fail(error);
+  }
+  revalidatePath("/users");
+  redirect("/users?saved=completion#batas-pengujian");
 }

@@ -1,5 +1,5 @@
 import { addDays, daysBetween } from "./dates";
-import { addWorkingDays } from "./workdays";
+import { addWorkingDays, workingDaysBetween } from "./workdays";
 
 // Deadline of an FPA/FPA-A: base date plus duration days, or null when either is missing.
 export function computeTaskDeadline(baseDate: string | null, duration: unknown): string | null {
@@ -24,6 +24,19 @@ export function fpaDeadline(fpa: FpaTiming, extraDays: number, workdays: number[
   if (finish) return addWorkingDays(finish, extraDays, workdays);
   const duration = fpa.estimasi_durasi_admin ?? fpa.estimasi_durasi;
   return computeTaskDeadline(fpa.tanggal_pengajuan, duration !== null && duration !== "" ? Number(duration) + extraDays : duration);
+}
+
+// FPAs from before the finish date existed have a calendar-day deadline.
+export function fpaCalendarDeadline(fpa: Pick<FpaTiming, "estimasi_selesai" | "estimasi_selesai_admin">): boolean {
+  return !(fpa.estimasi_selesai_admin ?? fpa.estimasi_selesai);
+}
+
+// Days a finished FPA / FPA-A came in after its deadline (0 = on time): working days, or calendar
+// days when `workdays` is null (old FPAs). Null when either date is unknown.
+export function documentLateDays(deadline: string | null, finished: string | null, workdays: number[] | null): number | null {
+  if (!deadline || !finished) return null;
+  if (workdays === null) return Math.max(0, daysBetween(deadline, finished));
+  return workingDaysBetween(deadline, finished, workdays);
 }
 
 interface FpmTiming {

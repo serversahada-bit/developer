@@ -17,7 +17,7 @@ export default async function FpaaPage({ searchParams }: PageProps<"/pengajuan/f
 
   const { context, revision, error } = await loadFormContext("fpaa", user, revisionParam);
   if (error) return <p className="mx-auto mt-16 max-w-xl rounded-xl border border-red-200 bg-red-50 p-6 text-red-800">{error}</p>;
-  const fpaOptions = await rows<{ nomor_fpa: string; nama_aplikasi: string }>(db, "SELECT nomor_fpa, nama_aplikasi FROM fpa_submissions WHERE nomor_fpa IS NOT NULL ORDER BY created_at DESC");
+  const fpaOptions = await rows<{ nomor_fpa: string; nama_aplikasi: string }>(db, "SELECT nomor_fpa, nama_aplikasi FROM fpa_submissions WHERE nomor_fpa IS NOT NULL AND (status_dokumen IS NULL OR status_dokumen <> 'Selesai') ORDER BY created_at DESC");
 
   const doc = revision?.document;
   const values: FpaaValues = {

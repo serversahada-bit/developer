@@ -333,8 +333,9 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
       atasan, karena yang menunggu adalah tahap atasan.
     - Persetujuan otomatis tidak digabung dengan tahap berikutnya: kalau
       Manager IT = Manager FAT, tahap FAT tetap dibuka untuknya.
-    - Revisi di tangan pemohon tidak punya batas waktu. Kirim ulang = semua
-      tahap mulai lagi, batas dihitung ulang.
+    - Revisi FPA di tangan pemohon tidak punya batas waktu. Revisi FPA-A
+      punya batas kirim ulang (bagian 7), lewat batas = ditolak otomatis.
+      Kirim ulang = semua tahap mulai lagi, batas dihitung ulang.
     - Selama belum diproses sistem, approver masih boleh memutuskan.
     - Dokumen yang sudah menunggu saat fitur ini dirilis dihitung sejak cron
       pertama kali berjalan. Jalur lama (approval_routes, stage NULL) tidak
@@ -377,18 +378,72 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
 
 
 -------------------------------------------------------------------------------
-7. SETELAH DISETUJUI: CHECKLIST PENGERJAAN
+7. SETELAH DISETUJUI: CHECKLIST PENGERJAAN DAN STATUS SELESAI
 -------------------------------------------------------------------------------
 
   Setiap item fitur/scope menjadi satu baris checklist:
 
-    1. Admin/Developer mencentang "selesai dikerjakan" (dev).
+    1. Admin/Developer mencentang "selesai dikerjakan" (Dev). Saat itu batas
+       test item dikunci (submission_checklist_items.test_due_at).
     2. Pemohon menguji:
-         - OK      -> item dianggap selesai ditest
-         - Belum sesuai (catatan wajib) -> item kembali ke Developer
-    3. Kalau pemohon tidak merespons 7 hari setelah dev selesai, item
-       otomatis dianggap sudah ditest (auto_completed).
-    4. Kalau Developer membatalkan centang dev, status test ikut direset.
+         - Oke     -> item dianggap selesai ditest
+         - Belum sesuai (catatan wajib) -> item kembali ke Developer,
+           batas test dihapus, semua anggota Tim IT menerima email berisi
+           catatannya
+    3. Kalau pemohon tidak merespons sampai batas test (default 7 hari
+       kerja sejak Dev dicentang, sampai jam yang sama), item otomatis
+       dianggap sudah ditest (auto_completed). Diproses cron.
+    4. Kalau Developer membatalkan centang Dev, status test ikut direset.
+
+  Email checklist (hanya antara pemohon dan Tim IT; atasan dan approver
+  di jalurnya tidak menerima):
+    - Item siap dites  -> pemohon, satu email per dokumen per hari, mulai
+                          pukul 16.00 WIB, berisi item yang dicentang Dev
+                          sejak email sebelumnya beserta batas test-nya.
+    - Pengingat        -> pemohon, 1 hari kerja sebelum batas test (batas
+                          1 hari = tanpa pengingat).
+    - Belum sesuai     -> semua anggota Tim IT.
+
+  STATUS SELESAI
+    - Disetujui -> Selesai otomatis saat item terakhir ditest (pemohon
+      menekan Oke, atau lolos karena batas test). FPA juga menunggu semua
+      FPA-A-nya yang masih berjalan (Diajukan/Disetujui/Revisi) selesai atau
+      ditolak; begitu FPA-A terakhir selesai/ditolak, FPA induknya dicek
+      ulang dan ikut Selesai kalau itemnya sudah ditest semua.
+    - Saat Selesai: status_dokumen = 'Selesai', tanggal_selesai dicatat,
+      project otomatisnya menjadi Completed (end_date = tanggal selesai),
+      kejadian "complete" dicatat di riwayat.
+    - Email "Selesai" ke pemohon, semua anggota Tim IT, dan atasan /
+      Manager IT / Manager FAT yang memutuskan di jalurnya (tahap yang
+      dilewati tidak menerima). Yang memicu tidak menerima email.
+    - Setelah Selesai checklist dikunci dan tidak bisa dibuka kembali.
+      Kendala sesudahnya dilaporkan lewat FPM; perubahan scope lewat FPA
+      baru. FPA yang sudah Selesai tidak bisa diberi FPA-A lagi (tidak ada
+      di pilihan form, dan ditolak di server termasuk saat kirim revisi).
+    - Dokumen tanpa item checklist: Admin menekan "Selesaikan Pengajuan"
+      di halaman detail.
+    - Keterlambatan = hari kerja dari deadline (bagian 9) sampai tanggal
+      selesai; 0 = "Tepat waktu". FPA lama yang deadline-nya hari kalender
+      dihitung dengan hari kalender.
+    - Dokumen yang sudah Disetujui dan semua itemnya ditest saat fitur ini
+      dipasang langsung Selesai lewat migrasi (tanggal = item terakhir
+      ditest, tanpa email).
+
+  BATAS KIRIM REVISI FPA-A
+    - FPA-A yang dikembalikan untuk revisi (oleh approver atau otomatis)
+      harus dikirim ulang dalam batasnya (default 7 hari kerja, dikunci
+      saat dikembalikan, approval_runs.revision_due_at). Lewat batas ->
+      FPA-A ditolak otomatis ("Sistem (otomatis)"), lalu FPA induknya dicek
+      ulang. Pengingat ke pemohon 1 hari kerja sebelumnya. FPA tidak punya
+      batas ini.
+    - FPA-A yang sudah berstatus Revisi saat fitur ini dipasang dihitung
+      sejak cron pertama kali berjalan.
+
+  Batas test dan batas revisi FPA-A diatur Admin di menu Users (1-30 hari
+  kerja), berlaku untuk item/revisi yang dimulai setelah disimpan. Semua
+  batas di atas diproses oleh cron (bagian 11) lewat processCompletion di
+  src/lib/completion.ts; tanpa cron, item tidak pernah lolos otomatis dan
+  email harian tidak terkirim.
 
   Progres checklist tampil di halaman detail dan di board Task.
 
@@ -420,13 +475,17 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
   punya menu "tasks":
     - FPA / FPA-A berstatus Diajukan, Diverifikasi, Disetujui, atau Revisi.
     - Deadline FPA   = estimasi tanggal selesai (koreksi Admin kalau ada)
-                       + tambahan waktu FPA-A yang disetujui, dihitung
+                       + tambahan waktu FPA-A yang disetujui/selesai, dihitung
                        sebagai hari kerja.
                        FPA lama tanpa tanggal selesai: tanggal_pengajuan +
                        estimasi durasi + tambahan waktu FPA-A (hari kalender).
     - Deadline FPA-A = tanggal dibuat + tambahan waktu.
-    - FPA-A ditampilkan di bawah kartu FPA induknya.
+    - FPA-A ditampilkan di bawah kartu FPA induknya. FPA-A yang sudah
+      Selesai tetap di bawah induknya yang masih berjalan, diredupkan.
     - Urut berdasarkan deadline terdekat.
+    - FPA / FPA-A Selesai pindah ke "Riwayat · Sudah Selesai" (bisa dibuka-
+      tutup), urut dari yang terbaru selesai, dengan tanggal selesai dan
+      Tepat waktu / Terlambat N hari kerja.
     - Dokumen "rahasia": hanya nomor/tanggal/deadline yang terlihat, kecuali
       untuk pemohon, approver di jalurnya, atau Admin.
     - Bagian FPM: daftar aktif (Open/In Progress) dan riwayat Closed.
@@ -475,6 +534,12 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
      Pengingat batas waktu       -        -                        turn (approver saat ini)
      Disetujui otomatis          info     info (yang terlewat)     turn
      Dikembalikan / final otom.  info     info (+ yang terlewat)   -
+     Pengingat batas revisi FPA-A info    -                        -
+     FPA-A ditolak otomatis      info     info                     -
+     Item siap dites (harian)    info     -                        -
+     Pengingat batas test item   info     -                        -
+     Item belum sesuai           -        -                        - (semua Tim IT)
+     Selesai                     info     info                     - (+ semua Tim IT)
      (Yang melakukan aksi tidak menerima email atas aksinya sendiri.)
 
   2. Setelah transaksi selesai, aplikasi langsung mencoba mengirim via SMTP
@@ -485,7 +550,8 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
         POST /api/cron/approval-emails
         Header: Authorization: Bearer <CRON_SECRET>
      (Disarankan dijalankan tiap menit.) Cron ini lebih dulu memproses batas
-     waktu approval (bagian 6), lalu mengirim email yang masuk antrean.
+     waktu approval (bagian 6) dan batas setelah disetujui (bagian 7), lalu
+     mengirim email yang masuk antrean.
   5. Sebelum mengirim, email 'turn' dicek ulang. Kalau gilirannya sudah
      lewat, ditandai 'skipped'.
   6. Email FPM memakai antrean sendiri (fpm_email_queue) karena FPM tidak
@@ -533,6 +599,8 @@ PHP dan Next.js bisa berjalan berdampingan di data yang sama.
   src/lib/approval.ts               tahap & keputusan approval, budget,
                                     Manager IT/FAT, status FPM
   src/lib/checklist.ts              checklist pengerjaan setelah disetujui
+  src/lib/completion.ts             status Selesai, batas test & revisi
+                                    FPA-A, email harian item siap dites
   src/lib/email.ts                  antrean & pengiriman email
   src/lib/deadlines.ts              hitung deadline FPA/FPA-A/FPM
   src/app/login, sso, logout        masuk & keluar

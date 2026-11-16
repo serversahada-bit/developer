@@ -9,9 +9,10 @@ import { formatDate, todayWib } from "./dates";
 import { parseRupiah } from "./form";
 import { findAtasan, karyawanInactive, type Karyawan } from "./identity";
 import { isTimIt, MANAGER_ROLE_LABEL, MANAGER_ROLES, timItWhere, type ManagerRole } from "./menus";
-import { approvalLimits, workingDays } from "./settings";
+import { approvalLimits, completionLimits, workingDays } from "./settings";
 import { ensureUserForKaryawan } from "./users";
 import { formatDeadline, stageSchedule } from "./workdays";
+import { completeParentFpa } from "./completion";
 
 export interface ApprovalRun {
   id: number;
@@ -22,6 +23,11 @@ export interface ApprovalRun {
   current_position: number;
   state: "pending" | "revision" | "approved" | "rejected";
   project_id: number | null;
+  // An FPA-A sent back for revision must be resent by revision_due_at, or it is rejected (cron).
+  revision_due_days: number | null;
+  revision_due_at: string | null;
+  revision_remind_at: string | null;
+  revision_reminded_at: string | null;
   created_at: string;
 }
 
@@ -51,9 +57,9 @@ interface Approver {
   karyawan_id: number | null;
 }
 
-// Who an event is recorded for: a signed-in user, or the system when a stage's time limit passes.
-type Actor = Pick<CurrentUser, "full_name"> & { id: number | null };
-const SYSTEM: Actor = { id: null, full_name: "Sistem (otomatis)" };
+// Who an event is recorded for: a signed-in user, or the system when a time limit passes.
+export type Actor = Pick<CurrentUser, "full_name"> & { id: number | null };
+export const SYSTEM: Actor = { id: null, full_name: "Sistem (otomatis)" };
 
 export function approvalRun(conn: Db, type: DocType, id: number, lock = false): Promise<ApprovalRun | null> {
   return row<ApprovalRun>(conn, `SELECT * FROM approval_runs WHERE document_type = ? AND document_id = ?${lock ? " FOR UPDATE" : ""}`, [type, id]);
@@ -63,7 +69,7 @@ export function approvalSteps(conn: Db, run: ApprovalRun): Promise<ApprovalStep[
   return rows<ApprovalStep>(conn, "SELECT * FROM approval_steps WHERE run_id = ? AND cycle = ? ORDER BY position", [run.id, run.cycle]);
 }
 
-async function approvalEvent(tx: PoolConnection, run: ApprovalRun, actor: Actor, action: string, note = "", snapshot: Row | null = null): Promise<number> {
+export async function approvalEvent(tx: PoolConnection, run: ApprovalRun, actor: Actor, action: string, note = "", snapshot: Row | null = null): Promise<number> {
   const result = await exec(tx, "INSERT INTO approval_events (run_id, cycle, actor_id, actor_name, action, note, document_snapshot) VALUES (?, ?, ?, ?, ?, ?, ?)", [
     run.id, run.cycle, actor.id, actor.full_name, action, note, snapshot === null ? null : JSON.stringify(snapshot),
   ]);
@@ -235,7 +241,7 @@ async function finishApproved(tx: PoolConnection, type: DocType, id: number, run
 }
 
 // The requester and everyone who has already decided on the document, except the actor.
-async function involvedIds(tx: PoolConnection, run: ApprovalRun, actorId: number | null): Promise<number[]> {
+export async function involvedIds(tx: PoolConnection, run: ApprovalRun, actorId: number | null): Promise<number[]> {
   const approvers = await rows<{ approver_id: number }>(tx, `SELECT DISTINCT approver_id FROM approval_steps
     WHERE run_id = ? AND approver_id IS NOT NULL AND state IN ('approved', 'revision', 'rejected')`, [run.id]);
   return [run.requester_id, ...approvers.map((step) => Number(step.approver_id))].filter((id) => id !== actorId);
@@ -258,7 +264,8 @@ async function startApproval(tx: PoolConnection, type: DocType, id: number, requ
 // A revised document goes through every stage again, from the (re-read) atasan.
 export async function restartApproval(tx: PoolConnection, type: DocType, id: number, run: ApprovalRun, actor: CurrentUser, atasan: AtasanResult): Promise<void> {
   await assertApproversReady(tx, run.requester_id);
-  await exec(tx, "UPDATE approval_runs SET cycle = cycle + 1, current_position = 1, state = 'pending' WHERE id = ?", [run.id]);
+  await exec(tx, `UPDATE approval_runs SET cycle = cycle + 1, current_position = 1, state = 'pending',
+    revision_due_days = NULL, revision_due_at = NULL, revision_remind_at = NULL, revision_reminded_at = NULL WHERE id = ?`, [run.id]);
   const next: ApprovalRun = { ...run, cycle: run.cycle + 1, current_position: 1, state: "pending" };
   const eventId = await approvalEvent(tx, next, actor, "resubmit", "", await row(tx, `SELECT * FROM ${approvalTable(type)} WHERE id = ?`, [id]));
   if (!(await openNextStage(tx, { type, id, run: next, atasan }, null, null))) throw new UserError("Jalur approval tidak dapat dibentuk. Hubungi Admin.");
@@ -308,6 +315,7 @@ function waitingLabel(stage: Stage | null, approverId: number | null, approverNa
 }
 
 export function approvalLabel(run: ApprovalRun | null, steps: ApprovalStep[], fallback: string): string {
+  if (fallback === "Selesai") return "Selesai";
   if (!run) return ["Draft", "Diajukan", "Diverifikasi"].includes(fallback) ? "Belum memiliki jalur approval" : fallback;
   const labels: Record<string, string> = { revision: "Perlu revisi pemohon", approved: "Disetujui final", rejected: "Ditolak" };
   if (labels[run.state]) return labels[run.state];
@@ -391,9 +399,21 @@ async function applyDecision(tx: PoolConnection, target: DecisionTarget, actor: 
   await exec(tx, "UPDATE approval_runs SET state = ? WHERE id = ?", [state, run.id]);
   await exec(tx, "UPDATE approval_steps SET state = 'skipped' WHERE run_id = ? AND cycle = ? AND state = 'waiting'", [run.id, run.cycle]);
   await exec(tx, `UPDATE ${approvalTable(type)} SET status_dokumen = ? WHERE id = ?`, [action === "reject" ? "Ditolak" : "Revisi", id]);
+  // Only an FPA-A has to be resent in time: a pending one keeps its parent FPA from finishing.
+  if (action === "revision" && type === "fpaa") await scheduleRevisionDeadline(tx, run.id);
   const eventId = await approvalEvent(tx, run, actor, eventAction(action), note);
   await queueInfoEmails(tx, run.id, eventId, [...(await involvedIds(tx, run, actor.id)), ...missed]);
+  // A rejected FPA-A no longer holds its parent back.
+  if (action === "reject" && type === "fpaa") await completeParentFpa(tx, document.nomor_fpa_utama);
   return action;
+}
+
+// The FPA-A revision window, counted from now with Admin's current setting and fixed afterwards.
+export async function scheduleRevisionDeadline(tx: PoolConnection, runId: number): Promise<void> {
+  const days = (await completionLimits(tx)).revisi_fpaa;
+  const now = String(await scalar(tx, "SELECT NOW()"));
+  const { due, remind } = stageSchedule(now, days, await workingDays(tx));
+  await exec(tx, "UPDATE approval_runs SET revision_due_days = ?, revision_due_at = ?, revision_remind_at = ?, revision_reminded_at = NULL WHERE id = ?", [days, due, remind, runId]);
 }
 
 // --- Time limits (run by the cron) ----------------------------------------------------------
@@ -647,17 +667,21 @@ export async function approvalList(type: DocType, user: CurrentUser, view: ListV
     params.push(user.id, user.id);
   }
   const list = await rows(db, `SELECT d.*, r.state AS workflow_state, s.stage AS current_stage, s.approver_id AS current_approver_id, s.approver_name AS current_approver,
-      s.due_at AS current_due_at
+      s.due_at AS current_due_at, r.revision_due_at
     FROM ${table} d LEFT JOIN approval_runs r ON r.document_type = ? AND r.document_id = d.id
     LEFT JOIN approval_steps s ON s.run_id = r.id AND s.cycle = r.cycle AND s.position = r.current_position
     ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY d.created_at DESC, d.id DESC`, params);
   const labels: Record<string, string> = { approved: "Disetujui final", rejected: "Ditolak", revision: "Perlu revisi pemohon" };
   return list.map((item) => ({
     ...item,
-    approval_label: item.workflow_state === "pending"
-      ? waitingLabel(item.current_stage, item.current_approver_id, item.current_approver)
-      : labels[item.workflow_state ?? ""] ?? approvalLabel(null, [], item.status_dokumen),
-    approval_due: item.workflow_state === "pending" && item.current_due_at ? `Batas keputusan: ${formatDeadline(item.current_due_at)}` : null,
+    approval_label: item.status_dokumen === "Selesai"
+      ? `Selesai${item.tanggal_selesai ? ` ${formatDate(item.tanggal_selesai, "d M Y")}` : ""}`
+      : item.workflow_state === "pending"
+        ? waitingLabel(item.current_stage, item.current_approver_id, item.current_approver)
+        : labels[item.workflow_state ?? ""] ?? approvalLabel(null, [], item.status_dokumen),
+    approval_due: item.workflow_state === "pending" && item.current_due_at
+      ? `Batas keputusan: ${formatDeadline(item.current_due_at)}`
+      : item.workflow_state === "revision" && item.revision_due_at ? `Batas kirim revisi: ${formatDeadline(item.revision_due_at)}` : null,
   }));
 }
 

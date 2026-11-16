@@ -1,12 +1,15 @@
 import Link from "next/link";
 import type { CurrentUser } from "@/lib/auth";
 import { approvalLabel, canActApproval, canAdjustBudget, canRejectFinal, type ApprovalRun, type ApprovalStep } from "@/lib/approval";
+import type { CompletionInfo } from "@/lib/completion";
 import type { Row } from "@/lib/db";
 import { costColumns, effectiveCost, revisionUrl, rupiah, STAGE_LABEL, type DocType } from "@/lib/documents";
 import { decodeScopeItems, scopeItemsAsText } from "@/lib/scope";
+import { formatDate } from "@/lib/dates";
 import { formatDeadline } from "@/lib/workdays";
 import ActionForm, { SubmitButton } from "@/components/ActionForm";
-import { activateApprovalAction, budgetAction, decisionAction } from "../../actions";
+import { CompletionBadge } from "@/components/ui";
+import { activateApprovalAction, budgetAction, completeAction, decisionAction } from "../../actions";
 
 const STEP_LABELS: Record<ApprovalStep["state"], string> = {
   waiting: "Menunggu giliran",
@@ -31,6 +34,13 @@ const ACTION_LABELS: Record<string, string> = {
   auto_approve_final: "Menyetujui final otomatis (batas waktu lewat)",
   auto_revision: "Mengembalikan untuk revisi otomatis (batas waktu lewat)",
   deadline_reminder: "Mengirim pengingat batas waktu",
+  revision_reminder: "Mengirim pengingat batas kirim revisi",
+  auto_reject: "Menolak otomatis (batas kirim revisi lewat)",
+  checklist_ready: "Memberi tahu pemohon: item siap ditest",
+  checklist_reminder: "Mengingatkan pemohon: batas test item",
+  checklist_reject: "Menandai item belum sesuai",
+  checklist_auto_test: "Menandai item sudah ditest otomatis (batas test lewat)",
+  complete: "Menyatakan pengajuan selesai",
 };
 
 // A step the system decided because its time limit passed.
@@ -112,17 +122,53 @@ function BudgetForm({ type, document }: { type: DocType; document: Row }) {
   );
 }
 
-export default function ApprovalPanel({ type, document, run, steps, events, user }: {
+function CompletionSummary({ type, document, completion }: { type: DocType; document: Row; completion: CompletionInfo }) {
+  if (document.status_dokumen === "Selesai") {
+    return (
+      <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-semibold">Selesai {completion.finishedAt ? formatDate(completion.finishedAt, "d F Y") : ""}</span>
+          <CompletionBadge lateDays={completion.lateDays} unit={completion.lateUnit} />
+        </div>
+        <p className="mt-1 text-xs text-emerald-800">
+          {completion.deadline ? `Deadline ${formatDate(completion.deadline, "d F Y")}. ` : ""}
+          Checklist dikunci. Kendala setelah selesai dilaporkan lewat FPM{type === "fpa" ? ", perubahan scope lewat FPA baru" : ""}.
+        </p>
+      </div>
+    );
+  }
+  if (document.status_dokumen !== "Disetujui") return null;
+  return (
+    <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
+      <p>Pengajuan otomatis berstatus <span className="font-semibold">Selesai</span> setelah semua item checklist ditest{type === "fpa" ? " dan semua FPA-A-nya selesai" : ""}.</p>
+      {completion.waitingAddenda.length > 0 && (
+        <p className="mt-1 text-xs text-amber-800">Masih menunggu FPA-A: {completion.waitingAddenda.join(", ")}.</p>
+      )}
+      {completion.canCompleteManually && (
+        <ActionForm action={completeAction} messagePosition="bottom" className="mt-3">
+          <input type="hidden" name="type" value={type} />
+          <input type="hidden" name="id" value={document.id} />
+          <p className="mb-2 text-xs text-gray-500">Dokumen ini tidak memiliki item checklist, jadi Admin yang menyelesaikannya.</p>
+          <SubmitButton className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60">Selesaikan Pengajuan</SubmitButton>
+        </ActionForm>
+      )}
+    </div>
+  );
+}
+
+export default function ApprovalPanel({ type, document, run, steps, events, user, completion }: {
   type: DocType;
   document: Row;
   run: ApprovalRun | null;
   steps: ApprovalStep[];
   events: Row[];
   user: CurrentUser;
+  completion: CompletionInfo;
 }) {
   return (
     <section className="mb-6 space-y-4 rounded-xl border border-indigo-100 bg-white p-5">
       <h2 className="text-lg font-bold text-gray-900">{approvalLabel(run, steps, document.status_dokumen)}</h2>
+      <CompletionSummary type={type} document={document} completion={completion} />
       {run ? (
         <>
           <p className="text-sm text-gray-500">Putaran {run.cycle} · Persetujuan dilakukan sesuai urutan berikut.</p>
@@ -166,6 +212,10 @@ export default function ApprovalPanel({ type, document, run, steps, events, user
           ) : run.state === "revision" && run.requester_id === user.id ? (
             <Link href={revisionUrl(type, Number(document.id))} className="inline-block rounded-lg bg-amber-500 px-5 py-2.5 font-semibold text-gray-900">Perbaiki &amp; Kirim Ulang</Link>
           ) : null}
+
+          {run.state === "revision" && run.revision_due_at && (
+            <p className="text-sm font-medium text-amber-800">Batas kirim revisi: {formatDeadline(run.revision_due_at)} (lewat batas: FPA-A ditolak otomatis)</p>
+          )}
 
           {run.project_id && <Link href={`/projects/${run.project_id}`} className="inline-block text-indigo-700 underline">Lihat project</Link>}
 
